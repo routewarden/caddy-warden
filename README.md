@@ -1,11 +1,21 @@
-# RouteWarden for Caddy (`caddy-warden`)
+<div align="center">
+  <img src="assets/icon.svg" alt="RouteWarden Logo" width="140" height="140" />
+  <h1>RouteWarden for Caddy</h1>
+  <p><strong>High-performance Caddy v2 middleware module to stop sensitive file exposure (.env, .git, backups, database dumps, cloud credentials), neutralize path-evasion attacks, whitelist IPs, and serve custom error/captcha/honeypot responses before requests reach your upstream backend.</strong></p>
+</div>
 
-High-performance Caddy v2 middleware module to stop sensitive file exposure (`.env`, `.git`, backups, database dumps, cloud credentials), neutralize path-evasion attacks, whitelist IPs, and serve custom error/captcha/honeypot responses before requests reach your upstream backend.
+<p align="center">
+  <a href="https://github.com/routewarden/caddy-warden/actions/workflows/ci.yml"><img src="https://github.com/routewarden/caddy-warden/actions/workflows/ci.yml/badge.svg" alt="CI Status" /></a>
+  <a href="https://github.com/routewarden/caddy-warden"><img src="https://img.shields.io/badge/Coverage-95.9%25-brightgreen.svg" alt="Coverage" /></a>
+  <a href="https://goreportcard.com/report/github.com/routewarden/caddy-warden"><img src="https://goreportcard.com/badge/github.com/routewarden/caddy-warden" alt="Go Report Card" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
+  <a href="https://routewarden.github.io/docs/"><img src="https://img.shields.io/badge/Docs-VitePress%20Wiki-6366f1.svg" alt="Documentation Site" /></a>
+</p>
 
-[![CI](https://github.com/routewarden/caddy-warden/actions/workflows/ci.yml/badge.svg)](https://github.com/routewarden/caddy-warden/actions)
-[![Coverage](https://img.shields.io/badge/Coverage-95.9%25-brightgreen.svg)](https://github.com/routewarden/caddy-warden)
-[![Go Report Card](https://goreportcard.com/badge/github.com/routewarden/caddy-warden)](https://goreportcard.com/report/github.com/routewarden/caddy-warden)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+---
+
+> 📖 **Full Documentation, Guides & Wiki**: [https://routewarden.github.io/docs/](https://routewarden.github.io/docs/)  
+> 📂 **Runnable Scenarios**: [`examples/`](examples/) *(Caddyfile configurations)*
 
 ---
 
