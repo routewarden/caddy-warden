@@ -1,0 +1,54 @@
+{
+    order routewarden first
+}
+
+# Example 1: Tarpit - tie up attacker scanner resources with 1000ms delay per byte
+tarpit.example.com {
+    routewarden {
+        response {
+            mode tarpit
+            status 200
+            tarpit_delay_ms 1000
+            tarpit_max_duration 60
+        }
+    }
+
+    reverse_proxy localhost:8080
+}
+
+# Example 2: Gzip Bomb - exhaust scanner client memory on unauthorized sensitive requests
+gzipbomb.example.com {
+    routewarden {
+        response {
+            mode gzipBomb
+            status 200
+            gzip_bomb_mb 10
+        }
+    }
+
+    reverse_proxy localhost:8080
+}
+
+# Example 3: Infinite Random Stream - flood automated crawlers with random payload chunks
+stream.example.com {
+    routewarden {
+        response {
+            mode infiniteStream
+            status 200
+            stream_size_mb 50
+        }
+    }
+
+    reverse_proxy localhost:8080
+}
+
+# Example 4: Silent Drop - abruptly cut TCP connection immediately
+silentdrop.example.com {
+    routewarden {
+        response {
+            mode silentDrop
+        }
+    }
+
+    reverse_proxy localhost:8080
+}

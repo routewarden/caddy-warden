@@ -1,0 +1,17 @@
+{
+    order routewarden first
+}
+
+example.com {
+    routewarden {
+        # Challenge any bot probing sensitive assets with Cloudflare Turnstile
+        response {
+            mode captcha
+            status 403
+            captcha turnstile 0x4AAAAAAACxxxxxxxxxxx "Security Verification"
+            header X-Warden-Action Challenge
+        }
+    }
+
+    reverse_proxy localhost:8080
+}

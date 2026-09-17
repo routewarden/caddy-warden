@@ -1,0 +1,41 @@
+{
+    order routewarden first
+}
+
+# Honeypot redirection: divert all sensitive probe traffic to an external honeypot
+deflect.example.com {
+    routewarden {
+        response {
+            mode redirect
+            status 302
+            redirect_url https://honeypot.security.internal/trap
+        }
+    }
+
+    reverse_proxy localhost:8080
+}
+
+# Honeypot transparent reverse proxy: secretly pipe attackers to an isolated canary container
+canary.example.com {
+    routewarden {
+        response {
+            mode proxy
+            proxy_url http://10.100.0.99:8080
+        }
+    }
+
+    reverse_proxy localhost:8080
+}
+
+# Rate limit challenge: reply with 429 and Retry-After backoff headers
+ratelimit.example.com {
+    routewarden {
+        response {
+            mode rateLimitChallenge
+            status 429
+            retry_after 300
+        }
+    }
+
+    reverse_proxy localhost:8080
+}

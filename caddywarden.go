@@ -181,6 +181,14 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 		}
 
 		queryCandidates := []string{req.URL.RawQuery, unescapedQuery}
+		if parsedQuery, err := url.ParseQuery(req.URL.RawQuery); err == nil {
+			for _, vals := range parsedQuery {
+				for _, v := range vals {
+					queryCandidates = append(queryCandidates, v)
+					queryCandidates = append(queryCandidates, ExtractCandidatePaths(v, v, v)...)
+				}
+			}
+		}
 		for _, q := range queryCandidates {
 			for _, re := range rw.compiledBlock {
 				if re.MatchString(q) {

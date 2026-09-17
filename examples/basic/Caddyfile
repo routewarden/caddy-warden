@@ -1,0 +1,31 @@
+{
+    order routewarden first
+}
+
+example.com {
+    routewarden {
+        # Keep built-in rules active (.env, .git, database dumps, cloud credentials, etc.)
+        
+        # Block additional internal admin endpoints
+        path_patterns (?i)^/admin/(internal|metrics|debug)(/.*)?$
+
+        # Whitelist safe webhooks or health checks
+        allow_patterns (?i)^/api/healthz$
+
+        # Whitelist trusted office network and VPN CIDRs
+        allowed_ips 10.0.0.0/8 192.168.1.50
+
+        # Enable inspection of URL query parameters (?file=.env)
+        check_query
+
+        # Standard JSON forbidden response
+        response {
+            mode json
+            status 403
+            body '{"error":"Forbidden","message":"Access to sensitive endpoint is blocked","status":403}'
+            header X-Warden-Shield Active
+        }
+    }
+
+    reverse_proxy localhost:8080
+}
