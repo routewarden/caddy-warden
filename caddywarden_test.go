@@ -232,3 +232,120 @@ func TestRouteWarden_ServeHTTP_CheckQuery(t *testing.T) {
 		t.Errorf("expected status 200, got %d", rec3.Code)
 	}
 }
+
+
+func TestRouteWarden_ServeHTTP_Methods(t *testing.T) {
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+
+	t.Run("Default inspects only GET", func(t *testing.T) {
+		rw := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: true,
+		}
+		if err := rw.Provision(ctx); err != nil {
+			t.Fatalf("unexpected provision error: %v", err)
+		}
+
+		// GET /.env should be blocked
+		next1 := &testHandler{}
+		reqGet := httptest.NewRequest(http.MethodGet, "/.env", nil)
+		recGet := httptest.NewRecorder()
+		if err := rw.ServeHTTP(recGet, reqGet, next1); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if next1.handled || recGet.Code != http.StatusForbidden {
+			t.Errorf("expected GET /.env to be blocked with 403, got handled=%v code=%d", next1.handled, recGet.Code)
+		}
+
+		// POST /.env should bypass inspection and reach downstream handler
+		next2 := &testHandler{}
+		reqPost := httptest.NewRequest(http.MethodPost, "/.env", nil)
+		recPost := httptest.NewRecorder()
+		if err := rw.ServeHTTP(recPost, reqPost, next2); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !next2.handled || recPost.Code != http.StatusOK {
+			t.Errorf("expected POST /.env to pass downstream, got handled=%v code=%d", next2.handled, recPost.Code)
+		}
+
+		// PUT, DELETE, PATCH should also bypass
+		for _, method := range []string{http.MethodPut, http.MethodDelete, http.MethodPatch, http.MethodHead} {
+			next := &testHandler{}
+			req := httptest.NewRequest(method, "/.env", nil)
+			rec := httptest.NewRecorder()
+			if err := rw.ServeHTTP(rec, req, next); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !next.handled || rec.Code != http.StatusOK {
+				t.Errorf("expected %s /.env to pass downstream", method)
+			}
+		}
+	})
+
+	t.Run("Custom methods GET and POST", func(t *testing.T) {
+		rw := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: true,
+			Methods:               []string{"GET", "POST"},
+		}
+		if err := rw.Provision(ctx); err != nil {
+			t.Fatalf("unexpected provision error: %v", err)
+		}
+
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			next := &testHandler{}
+			req := httptest.NewRequest(method, "/.env", nil)
+			rec := httptest.NewRecorder()
+			if err := rw.ServeHTTP(rec, req, next); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if next.handled || rec.Code != http.StatusForbidden {
+				t.Errorf("expected %s /.env to be blocked with 403", method)
+			}
+		}
+
+		// DELETE should bypass
+		nextDel := &testHandler{}
+		reqDel := httptest.NewRequest(http.MethodDelete, "/.env", nil)
+		recDel := httptest.NewRecorder()
+		if err := rw.ServeHTTP(recDel, reqDel, nextDel); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !nextDel.handled || recDel.Code != http.StatusOK {
+			t.Errorf("expected DELETE /.env to pass downstream")
+		}
+	})
+
+	t.Run("Case-insensitive and empty fallback", func(t *testing.T) {
+		rw := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: true,
+			Methods:               []string{"post", "delete"},
+		}
+		if err := rw.Provision(ctx); err != nil {
+			t.Fatalf("unexpected provision error: %v", err)
+		}
+
+		// POST should be blocked
+		nextPost := &testHandler{}
+		reqPost := httptest.NewRequest(http.MethodPost, "/.env", nil)
+		recPost := httptest.NewRecorder()
+		if err := rw.ServeHTTP(recPost, reqPost, nextPost); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nextPost.handled || recPost.Code != http.StatusForbidden {
+			t.Errorf("expected POST /.env to be blocked with 403")
+		}
+
+		// GET should bypass
+		nextGet := &testHandler{}
+		reqGet := httptest.NewRequest(http.MethodGet, "/.env", nil)
+		recGet := httptest.NewRecorder()
+		if err := rw.ServeHTTP(recGet, reqGet, nextGet); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !nextGet.handled || recGet.Code != http.StatusOK {
+			t.Errorf("expected GET /.env to pass downstream")
+		}
+	})
+}

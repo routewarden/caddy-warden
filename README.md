@@ -163,6 +163,9 @@ example.com {
         # Whitelist corporate VPN / Office IPs
         allowed_ips 10.0.0.0/8 192.168.1.100
 
+        # HTTP methods to inspect (default: GET)
+        methods GET POST
+
         # Response configuration
         response {
             mode json
@@ -221,6 +224,9 @@ routewarden {
 
     # Allowed client IPs or CIDR subnets
     allowed_ips <ip/cidr...>
+
+    # HTTP methods to inspect (default: GET)
+    methods <GET|POST|PUT|DELETE...>
 
     # Custom response engine
     response {
