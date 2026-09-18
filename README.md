@@ -171,7 +171,7 @@ example.com {
         response {
             mode json
             status 403
-            body '{"error":"Forbidden","message":"Access to sensitive endpoint is blocked"}'
+            body "{\"error\":\"Forbidden\",\"message\":\"Access to sensitive endpoint is blocked\"}"
         }
     }
 
