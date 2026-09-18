@@ -1,6 +1,6 @@
 module github.com/routewarden/caddy-warden
 
-go 1.27.1
+go 1.25.1
 
 require (
 	github.com/caddyserver/caddy/v2 v2.8.4
