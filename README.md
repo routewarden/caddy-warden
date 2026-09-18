@@ -1,11 +1,21 @@
-# RouteWarden for Caddy (`caddy-warden`)
+<div align="center">
+  <img src="assets/icon.svg" alt="RouteWarden Logo" width="140" height="140" />
+  <h1>RouteWarden for Caddy</h1>
+  <p><strong>High-performance Caddy v2 middleware module to stop sensitive file exposure (.env, .git, backups, database dumps, cloud credentials), neutralize path-evasion attacks, whitelist IPs, and serve custom error/captcha/honeypot responses before requests reach your upstream backend.</strong></p>
+</div>
 
-High-performance Caddy v2 middleware module to stop sensitive file exposure (`.env`, `.git`, backups, database dumps, cloud credentials), neutralize path-evasion attacks, whitelist IPs, and serve custom error/captcha/honeypot responses before requests reach your upstream backend.
+<p align="center">
+  <a href="https://github.com/routewarden/caddy-warden/actions/workflows/ci.yml"><img src="https://github.com/routewarden/caddy-warden/actions/workflows/ci.yml/badge.svg" alt="CI Status" /></a>
+  <a href="https://github.com/routewarden/caddy-warden"><img src="https://img.shields.io/badge/Coverage-98.8%25-brightgreen.svg" alt="Coverage" /></a>
+  <a href="https://goreportcard.com/report/github.com/routewarden/caddy-warden"><img src="https://goreportcard.com/badge/github.com/routewarden/caddy-warden" alt="Go Report Card" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
+  <a href="https://routewarden.github.io/docs/"><img src="https://img.shields.io/badge/Docs-VitePress%20Wiki-6366f1.svg" alt="Documentation Site" /></a>
+</p>
 
-[![CI](https://github.com/routewarden/caddy-warden/actions/workflows/ci.yml/badge.svg)](https://github.com/routewarden/caddy-warden/actions)
-[![Coverage](https://img.shields.io/badge/Coverage-95.9%25-brightgreen.svg)](https://github.com/routewarden/caddy-warden)
-[![Go Report Card](https://goreportcard.com/badge/github.com/routewarden/caddy-warden)](https://goreportcard.com/report/github.com/routewarden/caddy-warden)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+---
+
+> 📖 **Full Documentation, Guides & Wiki**: [https://routewarden.github.io/docs/](https://routewarden.github.io/docs/)  
+> 📂 **Runnable Scenarios**: [`examples/`](examples/) *(Caddyfile configurations)*
 
 ---
 
@@ -36,7 +46,7 @@ Build Caddy with RouteWarden (pin to a specific release tag or use `@latest`):
 ```bash
 # Pin to a specific release (Recommended for production stability)
 xcaddy build \
-    --with github.com/routewarden/caddy-warden@v0.2.4
+    --with github.com/routewarden/caddy-warden@v0.3.0
 
 # Or build against the latest release
 xcaddy build \
@@ -62,7 +72,7 @@ FROM caddy:2.9-builder AS builder
 
 # Pin to a specific version with @vX.Y.Z
 RUN xcaddy build \
-    --with github.com/routewarden/caddy-warden@v0.2.4
+    --with github.com/routewarden/caddy-warden@v0.3.0
 
 FROM caddy:2.9-alpine
 
@@ -109,7 +119,7 @@ Import RouteWarden into your custom Caddy build script or Go project:
 
 ```bash
 # Pin to a specific version
-go get github.com/routewarden/caddy-warden@v0.2.4
+go get github.com/routewarden/caddy-warden@v0.3.0
 
 # Or latest
 go get github.com/routewarden/caddy-warden@latest
@@ -152,6 +162,9 @@ example.com {
 
         # Whitelist corporate VPN / Office IPs
         allowed_ips 10.0.0.0/8 192.168.1.100
+
+        # HTTP methods to inspect (default: GET)
+        methods GET POST
 
         # Response configuration
         response {
@@ -212,6 +225,9 @@ routewarden {
     # Allowed client IPs or CIDR subnets
     allowed_ips <ip/cidr...>
 
+    # HTTP methods to inspect (default: GET)
+    methods <GET|POST|PUT|DELETE...>
+
     # Custom response engine
     response {
         mode <json|html|text|captcha|redirect|silentDrop|gzipBomb|tarpit|fakeSuccess|rateLimitChallenge|proxy|infiniteStream|xml>
@@ -246,7 +262,7 @@ Check out the [`examples/`](examples) directory for complete, ready-to-run confi
 
 ## 🧪 Testing & Verification
 
-RouteWarden is tested against real-world path evasion attacks, evasion matrices, and scanner evasion techniques with **>95% test coverage**:
+RouteWarden is tested against real-world path evasion attacks, evasion matrices, and scanner evasion techniques with **>98% statement test coverage** (98.8%):
 
 ```bash
 # Run unit & anti-evasion tests with race detection

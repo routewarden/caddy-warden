@@ -13,6 +13,7 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 		Enabled:                    true,
 		EnableDefaultPatterns:      true,
 		EnableDefaultAllowPatterns: true,
+		Methods:                    []string{"GET"},
 		Response:                   DefaultResponseConfig(),
 	}
 	err := rw.UnmarshalCaddyfile(h.Dispenser)
@@ -26,6 +27,8 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	if rw.Response == nil {
 		rw.Response = DefaultResponseConfig()
 	}
+
+	var customMethods []string
 
 	for d.Next() {
 		for d.NextBlock(0) {
@@ -62,6 +65,13 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				rw.AllowedIPs = append(rw.AllowedIPs, args...)
+
+			case "methods":
+				args := d.RemainingArgs()
+				if len(args) == 0 {
+					return d.ArgErr()
+				}
+				customMethods = append(customMethods, args...)
 
 			case "response":
 				for d.NextBlock(1) {
@@ -189,6 +199,11 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.Errf("unrecognized routewarden subdirective: %s", d.Val())
 			}
 		}
+	}
+	if len(customMethods) > 0 {
+		rw.Methods = customMethods
+	} else if len(rw.Methods) == 0 {
+		rw.Methods = []string{"GET"}
 	}
 	return nil
 }
