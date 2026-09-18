@@ -211,6 +211,9 @@ routewarden {
     # Check query strings for sensitive filenames
     check_query
 
+    # Enable verbose debug logs (evaluations, candidate paths, IP matching)
+    debug
+
     # Custom regex patterns to block
     path_patterns <regex...>
 

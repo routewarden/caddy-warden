@@ -139,6 +139,7 @@ func TestCaddyfile_ComprehensiveDirectives(t *testing.T) {
 		disable_default_patterns
 		disable_default_allow_patterns
 		check_query
+		debug
 		path_patterns (?i)^/block1$ (?i)^/block2$
 		block_patterns (?i)^/block3$
 		allow_patterns (?i)^/allow1$ (?i)^/allow2$
@@ -181,6 +182,9 @@ func TestCaddyfile_ComprehensiveDirectives(t *testing.T) {
 	}
 	if !rw.CheckQuery {
 		t.Errorf("expected rw.CheckQuery to be true")
+	}
+	if !rw.Debug {
+		t.Errorf("expected rw.Debug to be true")
 	}
 	if len(rw.PathPatterns) != 3 {
 		t.Errorf("expected 3 path_patterns, got %d", len(rw.PathPatterns))

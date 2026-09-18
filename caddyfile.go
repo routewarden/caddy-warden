@@ -45,6 +45,9 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			case "check_query":
 				rw.CheckQuery = true
 
+			case "debug":
+				rw.Debug = true
+
 			case "path_patterns", "block_patterns":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
