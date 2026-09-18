@@ -22,7 +22,7 @@ example.com {
         response {
             mode json
             status 403
-            body '{"error":"Forbidden","message":"Access to sensitive endpoint is blocked","status":403}'
+            body "{\"error\":\"Forbidden\",\"message\":\"Access to sensitive endpoint is blocked\",\"status\":403}"
             header X-Warden-Shield Active
         }
     }

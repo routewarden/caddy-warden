@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Default Captcha HTML challenge template
@@ -118,8 +120,16 @@ const defaultCaptchaHTML = `<!DOCTYPE html>
 type ResponseHandler struct {
 	config          *ResponseConfig
 	silentDrop      bool
+	debug           bool
+	logger          *zap.Logger
 	captchaTemplate *template.Template
 	proxyHandler    http.Handler
+}
+
+// SetLogger attaches a logger and debug flag to the ResponseHandler.
+func (h *ResponseHandler) SetLogger(logger *zap.Logger, debug bool) {
+	h.logger = logger
+	h.debug = debug
 }
 
 // NewResponseHandler initializes a ResponseHandler with compiled templates and proxy handlers.
@@ -169,9 +179,14 @@ func NewResponseHandler(respCfg *ResponseConfig, topStatusCode int, topCustomTex
 		proxyHandler = httputil.NewSingleHostReverseProxy(targetURL)
 	}
 
+	isSilentDrop := silentDrop
+	if respCfg != nil && (strings.EqualFold(respCfg.Mode, "silentdrop") || strings.EqualFold(respCfg.Mode, "drop")) {
+		isSilentDrop = true
+	}
+
 	return &ResponseHandler{
 		config:          respCfg,
-		silentDrop:      silentDrop,
+		silentDrop:      isSilentDrop,
 		captchaTemplate: parsedTmpl,
 		proxyHandler:    proxyHandler,
 	}, nil
@@ -184,12 +199,30 @@ func (h *ResponseHandler) SetProxyHandlerForTest(p http.Handler) {
 
 // ServeBlockedRequest handles writing the configured response to the client.
 func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.Request) {
+	if h.debug && h.logger != nil {
+		h.logger.Debug("routewarden: serving blocked response",
+			zap.String("mode", h.config.Mode),
+			zap.Int("status_code", h.config.StatusCode),
+			zap.Bool("silent_drop", h.silentDrop),
+		)
+	}
+
 	if h.silentDrop {
 		if hj, ok := w.(http.Hijacker); ok {
 			conn, _, err := hj.Hijack()
 			if err == nil {
+				if h.debug && h.logger != nil {
+					h.logger.Debug("routewarden: connection hijacked and terminated for silent drop",
+						zap.String("client_ip", req.RemoteAddr),
+					)
+				}
 				_ = conn.Close()
 				return
+			}
+			if h.debug && h.logger != nil {
+				h.logger.Debug("routewarden: hijacker failed, falling back to status code write",
+					zap.Error(err),
+				)
 			}
 		}
 		w.WriteHeader(h.config.StatusCode)
@@ -210,6 +243,12 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 		code := h.config.StatusCode
 		if code < 300 || code > 308 {
 			code = http.StatusFound
+		}
+		if h.debug && h.logger != nil {
+			h.logger.Debug("routewarden: executing redirect",
+				zap.String("target_url", target),
+				zap.Int("code", code),
+			)
 		}
 		http.Redirect(w, req, target, code)
 

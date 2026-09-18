@@ -636,4 +636,60 @@ func TestRouteWarden_EmptyPatternStrings(t *testing.T) {
 	}
 }
 
+func TestRouteWarden_DebugLogs(t *testing.T) {
+	ctx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
+	defer cancel()
+
+	rw := &caddywarden.RouteWarden{
+		Enabled:                    true,
+		EnableDefaultPatterns:      true,
+		EnableDefaultAllowPatterns: true,
+		CheckQuery:                 true,
+		Debug:                      true,
+		AllowedIPs:                 []string{"192.168.1.100"},
+		AllowPatterns:              []string{`(?i)^/safe/endpoint$`},
+		Methods:                    []string{"GET"},
+	}
+
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("unexpected provision error: %v", err)
+	}
+
+	// 1. Method not inspected
+	reqPost := httptest.NewRequest(http.MethodPost, "/.env", nil)
+	recPost := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recPost, reqPost, &testHandler{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// 2. IP whitelisted
+	reqIP := httptest.NewRequest(http.MethodGet, "/.env", nil)
+	reqIP.RemoteAddr = "192.168.1.100:4321"
+	recIP := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recIP, reqIP, &testHandler{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// 3. Path allowed by pattern
+	reqAllow := httptest.NewRequest(http.MethodGet, "/safe/endpoint", nil)
+	recAllow := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recAllow, reqAllow, &testHandler{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// 4. Query string inspected
+	reqQuery := httptest.NewRequest(http.MethodGet, "/search?file=.env", nil)
+	recQuery := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recQuery, reqQuery, &testHandler{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// 5. Normal request passed inspection
+	reqPass := httptest.NewRequest(http.MethodGet, "/about", nil)
+	recPass := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recPass, reqPass, &testHandler{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 
