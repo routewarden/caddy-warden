@@ -34,6 +34,7 @@ type RouteWarden struct {
 	StatusCode                 int             `json:"status_code,omitempty"`
 	CustomResponseText         string          `json:"custom_response_text,omitempty"`
 	SilentDrop                 bool            `json:"silent_drop,omitempty"`
+	Debug                      bool            `json:"debug,omitempty"`
 	Response                   *ResponseConfig `json:"response,omitempty"`
 
 	logger          *zap.Logger
@@ -138,7 +139,19 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 	if err != nil {
 		return fmt.Errorf("routewarden: invalid response config: %w", err)
 	}
+	respHandler.SetLogger(rw.logger, rw.Debug)
 	rw.responseHandler = respHandler
+
+	if rw.Debug && rw.logger != nil {
+		rw.logger.Debug("routewarden: provisioned successfully",
+			zap.Int("compiled_block_patterns", len(rw.compiledBlock)),
+			zap.Int("compiled_allow_patterns", len(rw.compiledAllow)),
+			zap.Int("allowed_ips", len(rw.AllowedIPs)),
+			zap.Strings("methods", rw.Methods),
+			zap.Bool("check_query", rw.CheckQuery),
+			zap.String("response_mode", rw.Response.Mode),
+		)
+	}
 
 	return nil
 }
@@ -161,21 +174,50 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 
 	// Only inspect requests whose HTTP method matches configured verbs (default: GET)
 	if _, matchesMethod := rw.methods[strings.ToUpper(req.Method)]; !matchesMethod {
+		if rw.Debug && rw.logger != nil {
+			rw.logger.Debug("routewarden: method not inspected",
+				zap.String("method", req.Method),
+				zap.String("path", req.URL.Path),
+			)
+		}
 		return next.ServeHTTP(w, req)
 	}
 
 	// Stage 1: IP Whitelist bypass
-	if rw.ipFilter != nil && rw.ipFilter.IsAllowed(req) {
-		return next.ServeHTTP(w, req)
+	if rw.ipFilter != nil {
+		clientIP := ExtractClientIP(req)
+		allowed := rw.ipFilter.IsAllowed(req)
+		if rw.Debug && rw.logger != nil {
+			rw.logger.Debug("routewarden: evaluated client ip",
+				zap.String("extracted_ip", clientIP),
+				zap.String("remote_addr", req.RemoteAddr),
+				zap.Bool("whitelisted", allowed),
+			)
+		}
+		if allowed {
+			return next.ServeHTTP(w, req)
+		}
 	}
 
 	// Stage 2: Anti-Evasion Normalization
 	candidatePaths := ExtractCandidatePaths(req.URL.RawPath, req.URL.Path, req.RequestURI)
+	if rw.Debug && rw.logger != nil {
+		rw.logger.Debug("routewarden: evaluating candidate paths",
+			zap.Strings("candidate_paths", candidatePaths),
+			zap.String("client_ip", req.RemoteAddr),
+		)
+	}
 
 	// Stage 3: Allow Patterns (Explicit overrides)
 	for _, p := range candidatePaths {
 		for _, re := range rw.compiledAllow {
 			if re.MatchString(p) {
+				if rw.Debug && rw.logger != nil {
+					rw.logger.Debug("routewarden: path allowed by pattern",
+						zap.String("path", p),
+						zap.String("pattern", re.String()),
+					)
+				}
 				return next.ServeHTTP(w, req)
 			}
 		}
@@ -190,6 +232,12 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 			if re.MatchString(p) {
 				isBlocked = true
 				blockedByPattern = re.String()
+				if rw.Debug && rw.logger != nil {
+					rw.logger.Debug("routewarden: path matched block pattern",
+						zap.String("candidate_path", p),
+						zap.String("matched_pattern", blockedByPattern),
+					)
+				}
 				break
 			}
 		}
@@ -214,11 +262,22 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 				}
 			}
 		}
+		if rw.Debug && rw.logger != nil {
+			rw.logger.Debug("routewarden: checking query candidates",
+				zap.Strings("query_candidates", queryCandidates),
+			)
+		}
 		for _, q := range queryCandidates {
 			for _, re := range rw.compiledBlock {
 				if re.MatchString(q) {
 					isBlocked = true
 					blockedByPattern = re.String()
+					if rw.Debug && rw.logger != nil {
+						rw.logger.Debug("routewarden: query candidate matched block pattern",
+							zap.String("query_candidate", q),
+							zap.String("matched_pattern", blockedByPattern),
+						)
+					}
 					break
 				}
 			}
@@ -239,6 +298,13 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 		}
 		rw.responseHandler.ServeBlockedRequest(w, req)
 		return nil
+	}
+
+	if rw.Debug && rw.logger != nil {
+		rw.logger.Debug("routewarden: request passed inspection",
+			zap.String("path", req.URL.Path),
+			zap.String("method", req.Method),
+		)
 	}
 
 	return next.ServeHTTP(w, req)
