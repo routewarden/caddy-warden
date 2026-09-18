@@ -66,6 +66,19 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 				rw.AllowedIPs = append(rw.AllowedIPs, args...)
 
+			case "silent_drop":
+				rw.SilentDrop = true
+
+			case "status_code", "status":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				code, err := strconv.Atoi(d.Val())
+				if err != nil {
+					return d.Errf("invalid status code %s: %v", d.Val(), err)
+				}
+				rw.StatusCode = code
+
 			case "methods":
 				args := d.RemainingArgs()
 				if len(args) == 0 {

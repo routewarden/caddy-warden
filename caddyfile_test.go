@@ -241,6 +241,32 @@ func TestCaddyfile_ComprehensiveDirectives(t *testing.T) {
 	if resp.Captcha.Provider != "turnstile" || resp.Captcha.SiteKey != "my-site-key" || resp.Captcha.Title != "Security Verification Challenge" {
 		t.Errorf("unexpected captcha config: %+v", resp.Captcha)
 	}
+
+	// Test mode silentDrop parsing and execution
+	silentDropInput := `
+	routewarden {
+		response {
+			mode silentDrop
+		}
+	}
+	`
+	sdDispenser := caddyfile.NewTestDispenser(silentDropInput)
+	sdRw := &caddywarden.RouteWarden{}
+	if err := sdRw.UnmarshalCaddyfile(sdDispenser); err != nil {
+		t.Fatalf("unexpected unmarshal error for silentDrop: %v", err)
+	}
+	sdCtx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	if err := sdRw.Provision(sdCtx); err != nil {
+		t.Fatalf("failed to provision silentDrop module: %v", err)
+	}
+	recSD := httptest.NewRecorder()
+	reqSD := httptest.NewRequest(http.MethodGet, "/.env", nil)
+	if err := sdRw.ServeHTTP(recSD, reqSD, &testHandler{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if recSD.Body.Len() > 0 {
+		t.Errorf("expected empty body for silentDrop mode, got %s", recSD.Body.String())
+	}
 }
 
 func TestCaddyfile_ParsingErrors(t *testing.T) {
@@ -341,6 +367,43 @@ func TestCaddyfile_MethodsDirective(t *testing.T) {
 			if rw.Methods[i] != m {
 				t.Errorf("expected method %d to be %s, got %s", i, m, rw.Methods[i])
 			}
+		}
+	})
+
+	t.Run("Modes through Caddyfile", func(t *testing.T) {
+		testModes := map[string]string{
+			"json":               "",
+			"html":               "",
+			"text":               "",
+			"xml":                "",
+			"redirect":           "redirect_url https://honeypot.local/trap",
+			"fakeSuccess":        "",
+			"rateLimitChallenge": "",
+			"gzipBomb":           "",
+			"proxy":              "proxy_url http://127.0.0.1:9099",
+		}
+
+		for mode, extra := range testModes {
+			t.Run(mode, func(t *testing.T) {
+				cfg := "routewarden {\n response {\n mode " + mode + "\n " + extra + "\n }\n}"
+				d := caddyfile.NewTestDispenser(cfg)
+				rw := &caddywarden.RouteWarden{}
+				if err := rw.UnmarshalCaddyfile(d); err != nil {
+					t.Fatalf("failed to parse mode %s: %v", mode, err)
+				}
+				ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+				if err := rw.Provision(ctx); err != nil {
+					t.Fatalf("failed to provision mode %s: %v", mode, err)
+				}
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, "/.env", nil)
+				if err := rw.ServeHTTP(rec, req, &testHandler{}); err != nil {
+					t.Fatalf("unexpected error for mode %s: %v", mode, err)
+				}
+				if rec.Code == 0 {
+					t.Errorf("expected non-zero status code")
+				}
+			})
 		}
 	})
 }
