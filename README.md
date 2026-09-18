@@ -54,7 +54,7 @@ Then build Caddy with RouteWarden:
 ```bash
 # Pin to a specific version (recommended for production)
 xcaddy build \
-    --with github.com/routewarden/caddy-warden@v0.3.0
+    --with github.com/routewarden/caddy-warden@v0.3.1
 
 # Or build using the latest version
 xcaddy build \
@@ -79,7 +79,7 @@ Use Caddy's official multi-stage builder to create your image:
 FROM caddy:2.9-builder AS builder
 
 RUN xcaddy build \
-    --with github.com/routewarden/caddy-warden@v0.3.0
+    --with github.com/routewarden/caddy-warden@v0.3.1
 
 FROM caddy:2.9-alpine
 
@@ -125,7 +125,7 @@ volumes:
 If you build your own Caddy binary in Go, import RouteWarden for automatic registration:
 
 ```bash
-go get github.com/routewarden/caddy-warden@v0.3.0
+go get github.com/routewarden/caddy-warden@v0.3.1
 ```
 
 ```go

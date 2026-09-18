@@ -13,46 +13,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Compute matrix based on event type:
-  # - PRs run against primary Go version (1.22) for ultra-fast checks without queue congestion
-  # - Merges/pushes to main & develop run full matrix (1.21, 1.22, 1.23)
-  detect-matrix:
-    name: Determine Build Matrix
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-    steps:
-      - id: set-matrix
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo 'matrix=["1.22"]' >> $GITHUB_OUTPUT
-          else
-            echo 'matrix=["1.21", "1.22", "1.23"]' >> $GITHUB_OUTPUT
-          fi
-
   test-go:
-    name: Go (${{ matrix.go-version }})
-    needs: detect-matrix
+    name: Go 1.25.1 Test
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        go-version: ${{ fromJSON(needs.detect-matrix.outputs.matrix) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Go ${{ matrix.go-version }}
+      - name: Set up Go 1.25.1
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: "1.25.1"
           cache: true
 
       - name: Run Go Tests with Race Detection
         run: go test -v -race ./...
 
       - name: Run Coverage Check
-        if: matrix.go-version == '1.22'
         run: |
           go test -v -coverprofile=coverage.out ./...
           go tool cover -func=coverage.out
@@ -71,4 +48,3 @@ jobs:
           echo "| **Go Tests & Race Detector** | ✅ Passed | Ran with \`-race\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "🎉 **Ready for merge! All checks passed.**" >> $GITHUB_STEP_SUMMARY
-
