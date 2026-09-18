@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/routewarden/caddy-warden/actions/workflows/ci.yml"><img src="https://github.com/routewarden/caddy-warden/actions/workflows/ci.yml/badge.svg" alt="CI Status" /></a>
-  <a href="https://github.com/routewarden/caddy-warden"><img src="https://img.shields.io/badge/Coverage-95.9%25-brightgreen.svg" alt="Coverage" /></a>
+  <a href="https://github.com/routewarden/caddy-warden"><img src="https://img.shields.io/badge/Coverage-98.8%25-brightgreen.svg" alt="Coverage" /></a>
   <a href="https://goreportcard.com/report/github.com/routewarden/caddy-warden"><img src="https://goreportcard.com/badge/github.com/routewarden/caddy-warden" alt="Go Report Card" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
   <a href="https://routewarden.github.io/docs/"><img src="https://img.shields.io/badge/Docs-VitePress%20Wiki-6366f1.svg" alt="Documentation Site" /></a>
@@ -46,7 +46,7 @@ Build Caddy with RouteWarden (pin to a specific release tag or use `@latest`):
 ```bash
 # Pin to a specific release (Recommended for production stability)
 xcaddy build \
-    --with github.com/routewarden/caddy-warden@v0.2.4
+    --with github.com/routewarden/caddy-warden@v0.3.0
 
 # Or build against the latest release
 xcaddy build \
@@ -72,7 +72,7 @@ FROM caddy:2.9-builder AS builder
 
 # Pin to a specific version with @vX.Y.Z
 RUN xcaddy build \
-    --with github.com/routewarden/caddy-warden@v0.2.4
+    --with github.com/routewarden/caddy-warden@v0.3.0
 
 FROM caddy:2.9-alpine
 
@@ -119,7 +119,7 @@ Import RouteWarden into your custom Caddy build script or Go project:
 
 ```bash
 # Pin to a specific version
-go get github.com/routewarden/caddy-warden@v0.2.4
+go get github.com/routewarden/caddy-warden@v0.3.0
 
 # Or latest
 go get github.com/routewarden/caddy-warden@latest
@@ -262,7 +262,7 @@ Check out the [`examples/`](examples) directory for complete, ready-to-run confi
 
 ## 🧪 Testing & Verification
 
-RouteWarden is tested against real-world path evasion attacks, evasion matrices, and scanner evasion techniques with **>95% test coverage**:
+RouteWarden is tested against real-world path evasion attacks, evasion matrices, and scanner evasion techniques with **>98% statement test coverage** (98.8%):
 
 ```bash
 # Run unit & anti-evasion tests with race detection
