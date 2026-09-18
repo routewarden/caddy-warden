@@ -29,6 +29,7 @@ type RouteWarden struct {
 	BlockPatterns              []string        `json:"block_patterns,omitempty"`
 	AllowPatterns              []string        `json:"allow_patterns,omitempty"`
 	AllowedIPs                 []string        `json:"allowed_ips,omitempty"`
+	Methods                    []string        `json:"methods,omitempty"`
 	CheckQuery                 bool            `json:"check_query,omitempty"`
 	StatusCode                 int             `json:"status_code,omitempty"`
 	CustomResponseText         string          `json:"custom_response_text,omitempty"`
@@ -36,6 +37,7 @@ type RouteWarden struct {
 	Response                   *ResponseConfig `json:"response,omitempty"`
 
 	logger          *zap.Logger
+	methods         map[string]struct{}
 	compiledBlock   []*regexp.Regexp
 	compiledAllow   []*regexp.Regexp
 	ipFilter        *IPFilter
@@ -51,6 +53,7 @@ func (RouteWarden) CaddyModule() caddy.ModuleInfo {
 				Enabled:                    true,
 				EnableDefaultPatterns:      true,
 				EnableDefaultAllowPatterns: true,
+				Methods:                    []string{"GET"},
 				Response:                   DefaultResponseConfig(),
 			}
 		},
@@ -64,6 +67,23 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 	if rw.Response == nil {
 		rw.Response = DefaultResponseConfig()
 	}
+
+	// Initialize Methods Filter (defaults to ["GET"])
+	methodsMap := make(map[string]struct{})
+	if len(rw.Methods) == 0 {
+		methodsMap["GET"] = struct{}{}
+	} else {
+		for _, m := range rw.Methods {
+			m = strings.ToUpper(strings.TrimSpace(m))
+			if m != "" {
+				methodsMap[m] = struct{}{}
+			}
+		}
+		if len(methodsMap) == 0 {
+			methodsMap["GET"] = struct{}{}
+		}
+	}
+	rw.methods = methodsMap
 
 	// 1. Compile Block Patterns
 	var allBlockPatterns []string
@@ -136,6 +156,11 @@ func (rw *RouteWarden) Validate() error {
 // ServeHTTP implements caddyhttp.MiddlewareHandler.
 func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyhttp.Handler) error {
 	if !rw.Enabled {
+		return next.ServeHTTP(w, req)
+	}
+
+	// Only inspect requests whose HTTP method matches configured verbs (default: GET)
+	if _, matchesMethod := rw.methods[strings.ToUpper(req.Method)]; !matchesMethod {
 		return next.ServeHTTP(w, req)
 	}
 

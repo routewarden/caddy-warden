@@ -1,24 +1,42 @@
-# RouteWarden for Caddy (`caddy-warden`)
+<div align="center">
+  <img src="assets/icon.svg" alt="RouteWarden Logo" width="140" height="140" />
+  <h1>RouteWarden for Caddy</h1>
+  <p>A Caddy v2 plugin that blocks scanners from finding sensitive files (.env, .git, backups, database dumps, cloud credentials) and handles path-evasion tricks before requests hit your backend.</p>
+</div>
 
-High-performance Caddy v2 middleware module to stop sensitive file exposure (`.env`, `.git`, backups, database dumps, cloud credentials), neutralize path-evasion attacks, whitelist IPs, and serve custom error/captcha/honeypot responses before requests reach your upstream backend.
-
-[![CI](https://github.com/routewarden/caddy-warden/actions/workflows/ci.yml/badge.svg)](https://github.com/routewarden/caddy-warden/actions)
-[![Coverage](https://img.shields.io/badge/Coverage-95.9%25-brightgreen.svg)](https://github.com/routewarden/caddy-warden)
-[![Go Report Card](https://goreportcard.com/badge/github.com/routewarden/caddy-warden)](https://goreportcard.com/report/github.com/routewarden/caddy-warden)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+<p align="center">
+  <a href="https://github.com/routewarden/caddy-warden/actions/workflows/ci.yml"><img src="https://github.com/routewarden/caddy-warden/actions/workflows/ci.yml/badge.svg" alt="CI Status" /></a>
+  <a href="https://github.com/routewarden/caddy-warden"><img src="https://img.shields.io/badge/Coverage-98.8%25-brightgreen.svg" alt="Coverage" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
+  <a href="https://routewarden.github.io/docs/"><img src="https://img.shields.io/badge/Docs-Wiki-6366f1.svg" alt="Documentation Site" /></a>
+</p>
 
 ---
 
-## 🚀 Installation
+- **Live Playground**: [Try RouteWarden in your browser](https://routewarden.github.io/docs/?playground=open)
+- **Documentation & Guides**: [https://routewarden.github.io/docs/](https://routewarden.github.io/docs/)
+- **Example Configurations**: [`examples/`](examples/)
 
-RouteWarden is a Caddy v2 plugin and must be compiled into Caddy using `xcaddy` or built via Docker.
+---
 
-### Option 1: Using `xcaddy` (CLI)
+## Why RouteWarden?
 
-Install [xcaddy](https://github.com/caddyserver/xcaddy):
+Web servers constantly receive automated requests searching for exposed secrets, such as `.env` files, `.git` directories, database backups, and private keys. Attackers often hide these probes using URL encoding, backslashes, or path traversal tricks to bypass basic path filters.
+
+RouteWarden sits directly inside Caddy to catch these requests early. It cleans and decodes the requested path, checks it against known sensitive patterns or your own custom rules, and responds immediately before your application ever sees the request.
+
+---
+
+## Installation
+
+Because RouteWarden is a Caddy module, it needs to be built into Caddy using `xcaddy` or Docker.
+
+### Option 1: Build with `xcaddy` (CLI)
+
+First, install [xcaddy](https://github.com/caddyserver/xcaddy):
 
 ```bash
-# macOS (Homebrew)
+# macOS
 brew install xcaddy
 
 # Debian / Ubuntu / Linux
@@ -27,23 +45,23 @@ curl -1sLf 'https://dl.cloudsmith.io/public/caddy/xcaddy/gpg.key' | sudo gpg --d
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/xcaddy/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-xcaddy.list
 sudo apt update && sudo apt install xcaddy
 
-# Or with Go
+# Or using Go
 go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 ```
 
-Build Caddy with RouteWarden (pin to a specific release tag or use `@latest`):
+Then build Caddy with RouteWarden:
 
 ```bash
-# Pin to a specific release (Recommended for production stability)
+# Pin to a specific version (recommended for production)
 xcaddy build \
-    --with github.com/routewarden/caddy-warden@v0.2.4
+    --with github.com/routewarden/caddy-warden@v0.3.0
 
-# Or build against the latest release
+# Or build using the latest version
 xcaddy build \
     --with github.com/routewarden/caddy-warden
 ```
 
-Verify the module is registered:
+Confirm that the module is installed:
 
 ```bash
 ./caddy list-modules | grep routewarden
@@ -52,24 +70,23 @@ Verify the module is registered:
 
 ---
 
-### Option 2: Docker Multi-Stage Build
+### Option 2: Build with Docker
 
-Use the official `caddy:builder` image to build a customized Caddy binary with pinned `caddy-warden`:
+Use Caddy's official multi-stage builder to create your image:
 
 ```dockerfile
 # Dockerfile
 FROM caddy:2.9-builder AS builder
 
-# Pin to a specific version with @vX.Y.Z
 RUN xcaddy build \
-    --with github.com/routewarden/caddy-warden@v0.2.4
+    --with github.com/routewarden/caddy-warden@v0.3.0
 
 FROM caddy:2.9-alpine
 
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
 ```
 
-Build and run:
+Build and run the container:
 
 ```bash
 docker build -t caddy-warden .
@@ -103,19 +120,13 @@ volumes:
 
 ---
 
-### Option 4: Custom Go Application / Embedding
+### Option 4: Custom Go Build
 
-Import RouteWarden into your custom Caddy build script or Go project:
+If you build your own Caddy binary in Go, import RouteWarden for automatic registration:
 
 ```bash
-# Pin to a specific version
-go get github.com/routewarden/caddy-warden@v0.2.4
-
-# Or latest
-go get github.com/routewarden/caddy-warden@latest
+go get github.com/routewarden/caddy-warden@v0.3.0
 ```
-
-Import blank identifier to trigger auto-registration:
 
 ```go
 package main
@@ -133,9 +144,9 @@ func main() {
 
 ---
 
-## ⚡ Quickstart (`Caddyfile`)
+## Quickstart
 
-Register the directive order in your global options block, then place `routewarden` in any site:
+Add `order routewarden first` to your global options block, then configure `routewarden` inside your site definition:
 
 ```caddyfile
 {
@@ -144,16 +155,19 @@ Register the directive order in your global options block, then place `routeward
 
 example.com {
     routewarden {
-        # Optional: custom regex patterns to guard
+        # Custom regex patterns you want to block
         path_patterns (?i)^/admin/(secrets|internal)(/.*)?$
 
-        # Whitelist safe patterns
+        # Patterns that should always be allowed
         allow_patterns (?i)^/api/internal/health$
 
-        # Whitelist corporate VPN / Office IPs
+        # Whitelist trusted IP addresses or subnets (e.g., office VPN)
         allowed_ips 10.0.0.0/8 192.168.1.100
 
-        # Response configuration
+        # HTTP methods to inspect (defaults to GET)
+        methods GET POST
+
+        # What to return when a request is blocked
         response {
             mode json
             status 403
@@ -167,52 +181,49 @@ example.com {
 
 ---
 
-## 🛡️ Key Features
+## What It Does
 
-- **Anti-Probing & Scanner Defense**: Intercepts automated bots probing for `.env`, `.git`, `phpinfo.php`, `.aws/credentials`, `.kube/config`, database dumps (`.sql`, `.bak`, `.tar.gz`), package manager lockfiles, and Spring Boot Actuator endpoints.
-- **Anti-Evasion Engine**: Normalizes multi-layer URL encoding (`%252e%252e`), semicolon matrix parameters (`/;param/.env`), Windows backslashes (`\..\.env`), and null bytes before regex matching.
-- **IP & CIDR Subnet Whitelisting**: Bypass checks for trusted office IPs or VPN subnets (`allowed_ips 10.0.0.0/8 192.168.1.100`).
-- **Query Parameter Inspection**: Detect probes passed via query parameters (`check_query` checks `?file=.env` and decoded equivalents).
-- **13 Multi-Action Response Modes**:
-  - `json` / `html` / `text` / `xml`
-  - `captcha` (Cloudflare Turnstile, hCaptcha, Google reCAPTCHA)
-  - `redirect` (deflect to honeypot or sinkhole)
-  - `silentDrop` (instantly close TCP connection)
-  - `gzipBomb` (force memory exhaustion on automated scrapers)
-  - `tarpit` (slow trickling connection sink)
-  - `fakeSuccess` (synthetic honeypot payload)
-  - `rateLimitChallenge` (HTTP 429 backoff header)
-  - `infiniteStream` (pseudo-random endless stream)
-  - `proxy` (transparent honeypot reverse proxy)
+- **Blocks Probes and Scanners**: Automatically blocks requests for sensitive files including `.env`, `.git`, `phpinfo.php`, `.aws/credentials`, `.kube/config`, SQL dumps, backups (`.bak`, `.tar.gz`), and actuator endpoints.
+- **Normalizes Evasive Paths**: Decodes multiple layers of URL encoding (`%252e%252e`), strips matrix parameters (`/;param/.env`), converts backslashes, and strips null bytes so scanners cannot slip past filters.
+- **IP Allowlisting**: Exempt trusted corporate IPs, office networks, or VPN subnets from being blocked.
+- **Query Parameter Checks**: Optionally inspect query parameters (like `?file=.env`) when `check_query` is enabled.
+- **Flexible Response Modes**: Choose how to answer blocked requests:
+  - Standard errors: `json`, `html`, `text`, or `xml`
+  - Bot verification: `captcha` (Cloudflare Turnstile, hCaptcha, Google reCAPTCHA)
+  - Deflection: `redirect` to a honeypot or sinkhole, or `proxy` to an isolated backend
+  - Aggressive bot handling: `silentDrop` (close connection immediately), `tarpit` (trickle bytes slowly), `gzipBomb` (exhaust bot memory), `infiniteStream`, `fakeSuccess`, or `rateLimitChallenge` (HTTP 429)
 
 ---
 
-## ⚙️ Caddyfile Directives Reference
+## Caddyfile Reference
 
 ```caddyfile
 routewarden {
-    # Disable entire plugin
+    # Turn off RouteWarden for this site
     disable
 
-    # Disable out-of-the-box sensitive dictionaries (.env, .git, etc.)
+    # Turn off default sensitive file patterns (.env, .git, etc.)
     disable_default_patterns
 
-    # Disable default allowlist (robots.txt, sitemap.xml, .well-known)
+    # Turn off default safe list (robots.txt, sitemap.xml, .well-known)
     disable_default_allow_patterns
 
-    # Inspect query parameters for sensitive filenames
+    # Check query strings for sensitive filenames
     check_query
 
-    # Custom block patterns (regex)
+    # Custom regex patterns to block
     path_patterns <regex...>
 
-    # Custom safe allow patterns (regex)
+    # Custom regex patterns to allow
     allow_patterns <regex...>
 
-    # Allowed client IPs or CIDR subnets
+    # Trusted client IPs or CIDR subnets
     allowed_ips <ip/cidr...>
 
-    # Custom response engine
+    # HTTP methods to inspect (default: GET)
+    methods <GET|POST|PUT|DELETE...>
+
+    # Response behavior
     response {
         mode <json|html|text|captcha|redirect|silentDrop|gzipBomb|tarpit|fakeSuccess|rateLimitChallenge|proxy|infiniteStream|xml>
         status <int>
@@ -233,38 +244,38 @@ routewarden {
 
 ---
 
-## 📁 Examples
+## Examples
 
-Check out the [`examples/`](examples) directory for complete, ready-to-run configurations:
+Ready-to-use Caddyfiles are available in the [`examples/`](examples) directory:
 
-- [**Basic Protection**](examples/basic/Caddyfile): Default blocklists, custom pattern protection, CIDR whitelist, and JSON 403 response.
-- [**Captcha Challenge**](examples/captcha/Caddyfile): Deflect automated bots with Cloudflare Turnstile verification.
-- [**Aggressive Defense**](examples/aggressive-defense/Caddyfile): Tarpits, memory-exhausting gzip bombs, infinite random streams, and silent drops.
-- [**Honeypot & Redirection**](examples/honeypot-and-redirect/Caddyfile): Redirecting to external traps, reverse-proxying into honeypot containers, and rate-limit challenges.
+- [**Basic Protection**](examples/basic/Caddyfile): Built-in blocklists, custom patterns, IP whitelisting, and JSON 403 responses.
+- [**Captcha Challenge**](examples/captcha/Caddyfile): Verify suspected bot traffic using Cloudflare Turnstile.
+- [**Aggressive Defense**](examples/aggressive-defense/Caddyfile): Slow down or deter scrapers with tarpits, gzip bombs, infinite streams, or silent drops.
+- [**Honeypot & Redirection**](examples/honeypot-and-redirect/Caddyfile): Redirect probes to an external sinkhole, forward to an isolated honeypot container, or return rate-limit challenges.
 
 ---
 
-## 🧪 Testing & Verification
+## Testing
 
-RouteWarden is tested against real-world path evasion attacks, evasion matrices, and scanner evasion techniques with **>95% test coverage**:
+RouteWarden has full automated tests for path normalization, pattern matching, and response modes, with over 98% test coverage:
 
 ```bash
-# Run unit & anti-evasion tests with race detection
+# Run tests with race detection
 go test -v -race ./...
 
-# Run test coverage profiling
+# View coverage summary
 go test -v -coverprofile=coverage.out ./...
 go tool cover -func=coverage.out
 ```
 
 ---
 
-## 🏷️ Versioning
+## Versioning
 
-RouteWarden follows [Semantic Versioning 2.0.0](https://semver.org/). See [VERSIONING.md](VERSIONING.md) for release workflows, policies, and version update script documentation.
+RouteWarden uses [Semantic Versioning 2.0.0](https://semver.org/). For release procedures and version management details, see [VERSIONING.md](VERSIONING.md).
 
 ---
 
-## 📄 License
+## License
 
-MIT License. Copyright © 2026 RouteWarden Contributors.
+MIT License. Copyright (c) 2026 RouteWarden Contributors.

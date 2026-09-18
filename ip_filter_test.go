@@ -94,3 +94,67 @@ func TestIPFilter_InvalidInputs(t *testing.T) {
 		t.Errorf("expected error for invalid CIDR subnet")
 	}
 }
+
+func TestIPFilter_WhitespaceAndEmptyEntries(t *testing.T) {
+	// Empty and whitespace-only entries should be cleanly ignored
+	filter, err := caddywarden.NewIPFilter([]string{"", "  ", "\t", "192.168.1.100"})
+	if err != nil {
+		t.Fatalf("unexpected error creating filter with whitespace entries: %v", err)
+	}
+
+	reqAllowed := httptest.NewRequest(http.MethodGet, "/", nil)
+	reqAllowed.RemoteAddr = "192.168.1.100:8080"
+	if !filter.IsAllowed(reqAllowed) {
+		t.Errorf("expected 192.168.1.100 to be allowed")
+	}
+
+	reqBlocked := httptest.NewRequest(http.MethodGet, "/", nil)
+	reqBlocked.RemoteAddr = "192.168.1.101:8080"
+	if filter.IsAllowed(reqBlocked) {
+		t.Errorf("expected 192.168.1.101 to NOT be allowed")
+	}
+}
+
+func TestIPFilter_UnparseableRemoteAddr(t *testing.T) {
+	filter, err := caddywarden.NewIPFilter([]string{"10.0.0.1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// RemoteAddr has no port and is not valid IP
+	req1 := httptest.NewRequest(http.MethodGet, "/", nil)
+	req1.RemoteAddr = "not-an-ip"
+	if filter.IsAllowed(req1) {
+		t.Errorf("expected unparseable RemoteAddr to be rejected")
+	}
+
+	// RemoteAddr is empty string
+	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	req2.RemoteAddr = ""
+	if filter.IsAllowed(req2) {
+		t.Errorf("expected empty RemoteAddr to be rejected")
+	}
+}
+
+func TestIPFilter_MultiIPForwardedFor(t *testing.T) {
+	filter, err := caddywarden.NewIPFilter([]string{"10.0.0.1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// X-Forwarded-For contains multiple IPs: client IP is first
+	req1 := httptest.NewRequest(http.MethodGet, "/", nil)
+	req1.RemoteAddr = "203.0.113.1:80"
+	req1.Header.Set("X-Forwarded-For", "10.0.0.1, 192.168.1.1")
+	if !filter.IsAllowed(req1) {
+		t.Errorf("expected first IP in X-Forwarded-For to be allowed")
+	}
+
+	// X-Forwarded-For first IP (172.16.0.1) is NOT whitelisted
+	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	req2.RemoteAddr = "203.0.113.1:80"
+	req2.Header.Set("X-Forwarded-For", "172.16.0.1, 10.0.0.1")
+	if filter.IsAllowed(req2) {
+		t.Errorf("expected first IP in X-Forwarded-For (not whitelisted) to be rejected")
+	}
+}

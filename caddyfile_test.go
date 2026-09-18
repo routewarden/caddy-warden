@@ -143,6 +143,7 @@ func TestCaddyfile_ComprehensiveDirectives(t *testing.T) {
 		block_patterns (?i)^/block3$
 		allow_patterns (?i)^/allow1$ (?i)^/allow2$
 		allowed_ips 192.168.1.1 10.0.0.0/24
+		methods GET POST
 		response {
 			mode captcha
 			status 429
@@ -189,6 +190,9 @@ func TestCaddyfile_ComprehensiveDirectives(t *testing.T) {
 	}
 	if len(rw.AllowedIPs) != 2 {
 		t.Errorf("expected 2 allowed_ips, got %d", len(rw.AllowedIPs))
+	}
+	if len(rw.Methods) != 2 || rw.Methods[0] != "GET" || rw.Methods[1] != "POST" {
+		t.Errorf("expected methods [GET POST], got %v", rw.Methods)
 	}
 
 	resp := rw.Response
@@ -247,6 +251,7 @@ func TestCaddyfile_ParsingErrors(t *testing.T) {
 		{"empty path_patterns", "routewarden {\n path_patterns\n}"},
 		{"empty allow_patterns", "routewarden {\n allow_patterns\n}"},
 		{"empty allowed_ips", "routewarden {\n allowed_ips\n}"},
+		{"empty methods", "routewarden {\n methods\n}"},
 		{"unknown routewarden directive", "routewarden {\n unknown_directive\n}"},
 		{"empty response mode", "routewarden {\n response {\n mode\n }\n}"},
 		{"empty response status", "routewarden {\n response {\n status\n }\n}"},
@@ -282,3 +287,60 @@ func TestCaddyfile_ParsingErrors(t *testing.T) {
 	}
 }
 
+
+
+func TestCaddyfile_MethodsDirective(t *testing.T) {
+	t.Run("Default methods when omitted", func(t *testing.T) {
+		input := `
+		routewarden {
+			path_patterns (?i)^/secret$
+		}
+		`
+		d := caddyfile.NewTestDispenser(input)
+		rw := &caddywarden.RouteWarden{}
+		if err := rw.UnmarshalCaddyfile(d); err != nil {
+			t.Fatalf("unexpected unmarshal error: %v", err)
+		}
+		if len(rw.Methods) != 1 || rw.Methods[0] != "GET" {
+			t.Errorf("expected default Methods to be [GET], got %v", rw.Methods)
+		}
+	})
+
+	t.Run("Single custom method", func(t *testing.T) {
+		input := `
+		routewarden {
+			methods POST
+		}
+		`
+		d := caddyfile.NewTestDispenser(input)
+		rw := &caddywarden.RouteWarden{}
+		if err := rw.UnmarshalCaddyfile(d); err != nil {
+			t.Fatalf("unexpected unmarshal error: %v", err)
+		}
+		if len(rw.Methods) != 1 || rw.Methods[0] != "POST" {
+			t.Errorf("expected Methods to be [POST], got %v", rw.Methods)
+		}
+	})
+
+	t.Run("Multiple custom methods", func(t *testing.T) {
+		input := `
+		routewarden {
+			methods GET POST DELETE PUT
+		}
+		`
+		d := caddyfile.NewTestDispenser(input)
+		rw := &caddywarden.RouteWarden{}
+		if err := rw.UnmarshalCaddyfile(d); err != nil {
+			t.Fatalf("unexpected unmarshal error: %v", err)
+		}
+		expected := []string{"GET", "POST", "DELETE", "PUT"}
+		if len(rw.Methods) != len(expected) {
+			t.Fatalf("expected %d methods, got %d", len(expected), len(rw.Methods))
+		}
+		for i, m := range expected {
+			if rw.Methods[i] != m {
+				t.Errorf("expected method %d to be %s, got %s", i, m, rw.Methods[i])
+			}
+		}
+	})
+}
