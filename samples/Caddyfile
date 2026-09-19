@@ -1,0 +1,173 @@
+{
+    admin off
+    order routewarden first
+}
+
+# 1. Port 8080: Default JSON mode & core features (custom patterns, IP allowlist, check_query, debug)
+:8080 {
+    routewarden {
+        debug
+        security_log
+        check_query
+        path_patterns (?i)^/admin/secret.*$
+        allow_patterns (?i)^/api/healthz$
+        allowed_ips 192.168.100.50 10.99.0.0/16
+        methods GET POST
+        response {
+            mode json
+            status 403
+            header X-RouteWarden-Protection Active
+            body "{\"error\":\"Access Denied\",\"security\":\"routewarden\"}"
+        }
+    }
+    respond "OK: Upstream Reached (8080)" 200
+}
+
+# 2. Port 8081: HTML mode
+:8081 {
+    routewarden {
+        response {
+            mode html
+            status 403
+            header X-RouteWarden-Mode html
+            body "<html><body><h1>Access Denied by RouteWarden</h1></body></html>"
+        }
+    }
+    respond "OK: Upstream Reached (8081)" 200
+}
+
+# 3. Port 8082: Plain Text mode
+:8082 {
+    routewarden {
+        response {
+            mode text
+            status 403
+            header X-RouteWarden-Mode text
+            body "Access Forbidden: RouteWarden Text Mode"
+        }
+    }
+    respond "OK: Upstream Reached (8082)" 200
+}
+
+# 4. Port 8083: XML mode
+:8083 {
+    routewarden {
+        response {
+            mode xml
+            status 403
+            header X-RouteWarden-Mode xml
+        }
+    }
+    respond "OK: Upstream Reached (8083)" 200
+}
+
+# 5. Port 8084: Captcha mode (Turnstile challenge)
+:8084 {
+    routewarden {
+        response {
+            mode captcha
+            status 403
+            captcha turnstile 0x4AAAAAAtestkey "Security Verification Challenge"
+        }
+    }
+    respond "OK: Upstream Reached (8084)" 200
+}
+
+# 6. Port 8085: Redirect mode
+:8085 {
+    routewarden {
+        response {
+            mode redirect
+            status 302
+            redirect_url https://honeypot.local/sinkhole
+        }
+    }
+    respond "OK: Upstream Reached (8085)" 200
+}
+
+# 7. Port 8086: RateLimitChallenge mode (HTTP 429 + Retry-After)
+:8086 {
+    routewarden {
+        response {
+            mode rateLimitChallenge
+            status 429
+            retry_after 180
+        }
+    }
+    respond "OK: Upstream Reached (8086)" 200
+}
+
+# 8. Port 8087: FakeSuccess / Decoy mode
+:8087 {
+    routewarden {
+        response {
+            mode fakeSuccess
+        }
+    }
+    respond "OK: Upstream Reached (8087)" 200
+}
+
+# 9. Port 8088: GzipBomb mode
+:8088 {
+    routewarden {
+        response {
+            mode gzipBomb
+            status 200
+            gzip_bomb_mb 1
+        }
+    }
+    respond "OK: Upstream Reached (8088)" 200
+}
+
+# 10. Port 8089: SilentDrop mode
+:8089 {
+    routewarden {
+        response {
+            mode silentDrop
+        }
+    }
+    respond "OK: Upstream Reached (8089)" 200
+}
+
+# 11. Port 8090: InfiniteStream mode
+:8090 {
+    routewarden {
+        response {
+            mode infiniteStream
+            status 200
+            stream_size_mb 2
+        }
+    }
+    respond "OK: Upstream Reached (8090)" 200
+}
+
+# 12. Port 8091: Proxy mode (honeypot upstream)
+:8091 {
+    routewarden {
+        response {
+            mode proxy
+            proxy_url http://honeypot:9999
+        }
+    }
+    respond "OK: Upstream Reached (8091)" 200
+}
+
+# 13. Port 8092: Disabled flag test (disable)
+:8092 {
+    routewarden {
+        disable
+    }
+    respond "OK: RouteWarden Disabled - Upstream Reached (8092)" 200
+}
+
+# 14. Port 8093: Methods filter test (inspects ONLY POST and DELETE; GET bypasses)
+:8093 {
+    routewarden {
+        methods POST DELETE
+        response {
+            mode json
+            status 403
+        }
+    }
+    respond "OK: Upstream Reached (8093)" 200
+}

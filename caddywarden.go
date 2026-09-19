@@ -1,11 +1,14 @@
 package caddywarden
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -22,9 +25,9 @@ func init() {
 // RouteWarden is a Caddy v2 HTTP middleware module that blocks reconnaissance
 // scans, sensitive file exposure, and path-evasion attacks.
 type RouteWarden struct {
-	Enabled                    bool            `json:"enabled,omitempty"`
-	EnableDefaultPatterns      bool            `json:"enable_default_patterns,omitempty"`
-	EnableDefaultAllowPatterns bool            `json:"enable_default_allow_patterns,omitempty"`
+	Enabled                    bool            `json:"enabled"`
+	EnableDefaultPatterns      bool            `json:"enable_default_patterns"`
+	EnableDefaultAllowPatterns bool            `json:"enable_default_allow_patterns"`
 	PathPatterns               []string        `json:"path_patterns,omitempty"`
 	BlockPatterns              []string        `json:"block_patterns,omitempty"`
 	AllowPatterns              []string        `json:"allow_patterns,omitempty"`
@@ -35,6 +38,7 @@ type RouteWarden struct {
 	CustomResponseText         string          `json:"custom_response_text,omitempty"`
 	SilentDrop                 bool            `json:"silent_drop,omitempty"`
 	Debug                      bool            `json:"debug,omitempty"`
+	SecurityLog                bool            `json:"security_log,omitempty"`
 	Response                   *ResponseConfig `json:"response,omitempty"`
 
 	logger          *zap.Logger
@@ -225,6 +229,8 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 
 	// Stage 4: Block Patterns Match
 	var blockedByPattern string
+	var blockedTarget string
+	var blockedReason string
 	isBlocked := false
 
 	for _, p := range candidatePaths {
@@ -232,6 +238,8 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 			if re.MatchString(p) {
 				isBlocked = true
 				blockedByPattern = re.String()
+				blockedTarget = p
+				blockedReason = "path_blocked"
 				if rw.Debug && rw.logger != nil {
 					rw.logger.Debug("routewarden: path matched block pattern",
 						zap.String("candidate_path", p),
@@ -272,6 +280,8 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 				if re.MatchString(q) {
 					isBlocked = true
 					blockedByPattern = re.String()
+					blockedTarget = unescapedQuery
+					blockedReason = "query_blocked"
 					if rw.Debug && rw.logger != nil {
 						rw.logger.Debug("routewarden: query candidate matched block pattern",
 							zap.String("query_candidate", q),
@@ -288,6 +298,7 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 	}
 
 	if isBlocked {
+		rw.logSecurityEvent(req, blockedTarget, blockedByPattern, blockedReason)
 		if rw.logger != nil {
 			rw.logger.Warn("routewarden: blocked sensitive request",
 				zap.String("client_ip", req.RemoteAddr),
@@ -308,6 +319,53 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 	}
 
 	return next.ServeHTTP(w, req)
+}
+
+// logSecurityEvent emits structured Zap warnings and standard CrowdSec JSON logs on stdout.
+func (rw *RouteWarden) logSecurityEvent(r *http.Request, matchedTarget string, pattern string, reason string) {
+	if !rw.SecurityLog {
+		return
+	}
+	mode := "text"
+	if rw.Response != nil && rw.Response.Mode != "" {
+		mode = rw.Response.Mode
+	} else if rw.SilentDrop {
+		mode = "silentDrop"
+	}
+	clientIP := ExtractClientIP(r)
+
+	// If using Caddy's zap logger:
+	if rw.logger != nil {
+		rw.logger.Warn("routewarden_block",
+			zap.String("type", "routewarden_block"),
+			zap.String("client_ip", clientIP),
+			zap.String("method", r.Method),
+			zap.String("path", matchedTarget),
+			zap.String("request_uri", r.RequestURI),
+			zap.String("pattern", pattern),
+			zap.String("action", mode),
+			zap.String("reason", reason),
+			zap.String("user_agent", r.UserAgent()),
+		)
+	}
+
+	// Also emit raw JSON to stdout so standard CrowdSec parsers pick it up identically:
+	event := map[string]interface{}{
+		"type":        "routewarden_block",
+		"timestamp":   time.Now().UTC().Format(time.RFC3339),
+		"plugin":      "caddy-warden",
+		"client_ip":   clientIP,
+		"method":      r.Method,
+		"path":        matchedTarget,
+		"request_uri": r.RequestURI,
+		"pattern":     pattern,
+		"action":      mode,
+		"reason":      reason,
+		"user_agent":  r.UserAgent(),
+	}
+	if data, err := json.Marshal(event); err == nil {
+		fmt.Fprintf(os.Stdout, "%s\n", string(data))
+	}
 }
 
 // Interface guards

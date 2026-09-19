@@ -48,6 +48,14 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			case "debug":
 				rw.Debug = true
 
+			case "security_log":
+				args := d.RemainingArgs()
+				if len(args) == 0 {
+					rw.SecurityLog = true
+				} else {
+					rw.SecurityLog = args[0] == "true" || args[0] == "1" || args[0] == "yes" || args[0] == "on"
+				}
+
 			case "path_patterns", "block_patterns":
 				args := d.RemainingArgs()
 				if len(args) == 0 {

@@ -54,7 +54,7 @@ Then build Caddy with RouteWarden:
 ```bash
 # Pin to a specific version (recommended for production)
 xcaddy build \
-    --with github.com/routewarden/caddy-warden@v0.3.2
+    --with github.com/routewarden/caddy-warden@v0.3.3
 
 # Or build using the latest version
 xcaddy build \
@@ -79,7 +79,7 @@ Use Caddy's official multi-stage builder to create your image:
 FROM caddy:2.9-builder AS builder
 
 RUN xcaddy build \
-    --with github.com/routewarden/caddy-warden@v0.3.2
+    --with github.com/routewarden/caddy-warden@v0.3.3
 
 FROM caddy:2.9-alpine
 
@@ -125,7 +125,7 @@ volumes:
 If you build your own Caddy binary in Go, import RouteWarden for automatic registration:
 
 ```bash
-go get github.com/routewarden/caddy-warden@v0.3.2
+go get github.com/routewarden/caddy-warden@v0.3.3
 ```
 
 ```go
@@ -214,6 +214,9 @@ routewarden {
     # Enable verbose debug logs (evaluations, candidate paths, IP matching)
     debug
 
+    # Emit structured CrowdSec / SIEM security audit logs on block
+    security_log
+
     # Custom regex patterns to block
     path_patterns <regex...>
 
@@ -244,6 +247,17 @@ routewarden {
     }
 }
 ```
+
+---
+
+## Documentation & Integrations
+
+For complete guides, configuration references, and integration recipes, visit the official documentation:
+
+- [**RouteWarden Documentation**](https://routewarden.github.io/docs)
+- [**CrowdSec Integration & Auto-Ban Guide**](https://routewarden.github.io/docs/examples/crowdsec): Detect and ban aggressive scanners automatically using CrowdSec.
+- [**Response Modes & Defense Actions**](https://routewarden.github.io/docs/reference/response-modes)
+- [**Anti-Evasion Engine**](https://routewarden.github.io/docs/reference/anti-evasion)
 
 ---
 
