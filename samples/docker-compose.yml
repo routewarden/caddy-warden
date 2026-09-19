@@ -1,0 +1,47 @@
+services:
+  caddy:
+    build:
+      context: ..
+      dockerfile: samples/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+      - "8082:8082"
+      - "8083:8083"
+      - "8084:8084"
+      - "8085:8085"
+      - "8086:8086"
+      - "8087:8087"
+      - "8088:8088"
+      - "8089:8089"
+      - "8090:8090"
+      - "8091:8091"
+      - "8092:8092"
+      - "8093:8093"
+    depends_on:
+      - honeypot
+
+  # Lightweight mock honeypot backend for testing proxy mode
+  honeypot:
+    image: python:3.11-alpine
+    restart: unless-stopped
+    command:
+      - python
+      - -c
+      - |
+        import http.server, socketserver
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("X-Honeypot-Captured", "true")
+                self.end_headers()
+                self.wfile.write(b"{\"honeypot\":\"captured\",\"status\":\"success\"}\n")
+            def do_POST(self):
+                self.do_GET()
+        socketserver.TCPServer.allow_reuse_address = True
+        with socketserver.TCPServer(("", 9999), H) as httpd:
+            httpd.serve_forever()
+    expose:
+      - "9999"
