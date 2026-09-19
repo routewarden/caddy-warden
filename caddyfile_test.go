@@ -2,8 +2,10 @@ package caddywarden_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/caddyserver/caddy/v2"
@@ -140,6 +142,7 @@ func TestCaddyfile_ComprehensiveDirectives(t *testing.T) {
 		disable_default_allow_patterns
 		check_query
 		debug
+		security_log true
 		path_patterns (?i)^/block1$ (?i)^/block2$
 		block_patterns (?i)^/block3$
 		allow_patterns (?i)^/allow1$ (?i)^/allow2$
@@ -185,6 +188,9 @@ func TestCaddyfile_ComprehensiveDirectives(t *testing.T) {
 	}
 	if !rw.Debug {
 		t.Errorf("expected rw.Debug to be true")
+	}
+	if !rw.SecurityLog {
+		t.Errorf("expected rw.SecurityLog to be true")
 	}
 	if len(rw.PathPatterns) != 3 {
 		t.Errorf("expected 3 path_patterns, got %d", len(rw.PathPatterns))
@@ -407,7 +413,49 @@ func TestCaddyfile_MethodsDirective(t *testing.T) {
 				if rec.Code == 0 {
 					t.Errorf("expected non-zero status code")
 				}
+				if mode == "xml" && !strings.Contains(rec.Body.String(), "<Error>") {
+					t.Errorf("expected xml mode without body to generate XML default, got: %s", rec.Body.String())
+				}
+				if mode == "fakeSuccess" && !strings.Contains(rec.Body.String(), "APP_NAME=Laravel") {
+					t.Errorf("expected fakeSuccess mode without body to generate decoy .env, got: %s", rec.Body.String())
+				}
+				if mode == "rateLimitChallenge" && !strings.Contains(rec.Body.String(), "Too Many Requests") {
+					t.Errorf("expected rateLimitChallenge mode without body to generate default rate limit body, got: %s", rec.Body.String())
+				}
 			})
+		}
+	})
+
+	t.Run("Disable flag survives Caddy JSON roundtrip", func(t *testing.T) {
+		cfg := "routewarden {\n disable\n}"
+		d := caddyfile.NewTestDispenser(cfg)
+		rw := &caddywarden.RouteWarden{}
+		if err := rw.UnmarshalCaddyfile(d); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+		if rw.Enabled {
+			t.Fatalf("expected Enabled=false after unmarshaling Caddyfile")
+		}
+
+		// Marshal to JSON (as Caddy does when adapting Caddyfile to JSON config)
+		data, err := json.Marshal(rw)
+		if err != nil {
+			t.Fatalf("failed to marshal JSON: %v", err)
+		}
+		if !strings.Contains(string(data), `"enabled":false`) {
+			t.Fatalf("expected JSON to contain '\"enabled\":false', got: %s", string(data))
+		}
+
+		// Unmarshal into a fresh module instance (as Caddy's New() does, where Enabled is true by default)
+		mod := caddywarden.RouteWarden{}.CaddyModule().New().(*caddywarden.RouteWarden)
+		if !mod.Enabled {
+			t.Fatalf("sanity check failed: module default should have Enabled=true")
+		}
+		if err := json.Unmarshal(data, mod); err != nil {
+			t.Fatalf("failed to unmarshal JSON: %v", err)
+		}
+		if mod.Enabled {
+			t.Fatalf("expected unmarshaled module to have Enabled=false, got true")
 		}
 	})
 }

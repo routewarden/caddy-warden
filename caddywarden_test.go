@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/caddyserver/caddy/v2"
@@ -692,4 +693,539 @@ func TestRouteWarden_DebugLogs(t *testing.T) {
 	}
 }
 
+func TestRouteWarden_SecurityLog(t *testing.T) {
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+		SecurityLog:           true,
+		Response: &caddywarden.ResponseConfig{
+			Mode:       "json",
+			StatusCode: http.StatusForbidden,
+		},
+	}
 
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("unexpected provision error: %v", err)
+	}
+
+	// 1. Path block with SecurityLog enabled
+	reqPath := httptest.NewRequest(http.MethodGet, "/.env", nil)
+	reqPath.Header.Set("User-Agent", "CrowdSecTestAgent/1.0")
+	recPath := httptest.NewRecorder()
+
+	if err := rw.ServeHTTP(recPath, reqPath, &testHandler{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if recPath.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", recPath.Code)
+	}
+
+	// 2. Query block with SecurityLog enabled
+	rwQuery := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+		CheckQuery:            true,
+		SecurityLog:           true,
+		Response: &caddywarden.ResponseConfig{
+			Mode:       "text",
+			StatusCode: http.StatusForbidden,
+		},
+	}
+	if err := rwQuery.Provision(ctx); err != nil {
+		t.Fatalf("unexpected provision error: %v", err)
+	}
+
+	reqQuery := httptest.NewRequest(http.MethodGet, "/download?file=.env", nil)
+	reqQuery.Header.Set("User-Agent", "CrowdSecTestAgent/1.0")
+	recQuery := httptest.NewRecorder()
+
+	if err := rwQuery.ServeHTTP(recQuery, reqQuery, &testHandler{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if recQuery.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", recQuery.Code)
+	}
+
+	// 3. SilentDrop mode with SecurityLog enabled
+	rwDrop := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+		SecurityLog:           true,
+		SilentDrop:            true,
+	}
+	if err := rwDrop.Provision(ctx); err != nil {
+		t.Fatalf("unexpected provision error: %v", err)
+	}
+
+	reqDrop := httptest.NewRequest(http.MethodGet, "/.env", nil)
+	recDrop := httptest.NewRecorder()
+	if err := rwDrop.ServeHTTP(recDrop, reqDrop, &testHandler{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// 4. SecurityLog disabled - should not panic or fail
+	rwDisabled := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+		SecurityLog:           false,
+	}
+	if err := rwDisabled.Provision(ctx); err != nil {
+		t.Fatalf("unexpected provision error: %v", err)
+	}
+	recDisabled := httptest.NewRecorder()
+	if err := rwDisabled.ServeHTTP(recDisabled, reqPath, &testHandler{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRouteWarden_LiveSamplesParitySuite(t *testing.T) {
+	ctx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
+	defer cancel()
+
+	t.Run("Section 1: Core Inspection & Built-in Patterns (:8080)", func(t *testing.T) {
+		rw := &caddywarden.RouteWarden{
+			Enabled:                    true,
+			EnableDefaultPatterns:      true,
+			EnableDefaultAllowPatterns: true,
+			Methods:                    []string{"GET", "POST"},
+			Response: &caddywarden.ResponseConfig{
+				Mode:       "json",
+				StatusCode: 403,
+				Headers: map[string]string{
+					"X-RouteWarden-Protection": "Active",
+				},
+				Body: `{"error":"Access Denied","security":"routewarden"}`,
+			},
+		}
+		if err := rw.Provision(ctx); err != nil {
+			t.Fatalf("provision error: %v", err)
+		}
+
+		// Benign request reaches upstream
+		next := &testHandler{}
+		req := httptest.NewRequest(http.MethodGet, "/index.html", nil)
+		rec := httptest.NewRecorder()
+		if err := rw.ServeHTTP(rec, req, next); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !next.handled || rec.Code != http.StatusOK {
+			t.Errorf("expected 200 OK from upstream for /index.html, got %d", rec.Code)
+		}
+
+		// Built-in sensitive files
+		builtins := []string{
+			"/.env",
+			"/.git/config",
+			"/backup/production.sql",
+			"/actuator/env",
+		}
+		for _, target := range builtins {
+			nextTarget := &testHandler{}
+			reqTarget := httptest.NewRequest(http.MethodGet, target, nil)
+			recTarget := httptest.NewRecorder()
+			if err := rw.ServeHTTP(recTarget, reqTarget, nextTarget); err != nil {
+				t.Fatalf("unexpected error for %s: %v", target, err)
+			}
+			if nextTarget.handled || recTarget.Code != http.StatusForbidden {
+				t.Errorf("expected 403 for %s, got %d", target, recTarget.Code)
+			}
+			if recTarget.Header().Get("X-RouteWarden-Protection") != "Active" {
+				t.Errorf("expected X-RouteWarden-Protection header for %s, got %s", target, recTarget.Header().Get("X-RouteWarden-Protection"))
+			}
+			if !strings.Contains(recTarget.Body.String(), "Access Denied") {
+				t.Errorf("expected 'Access Denied' in body for %s, got %s", target, recTarget.Body.String())
+			}
+		}
+	})
+
+	t.Run("Section 2: Anti-Evasion Normalization & Query Inspection (:8080)", func(t *testing.T) {
+		rw := &caddywarden.RouteWarden{
+			Enabled:                    true,
+			EnableDefaultPatterns:      true,
+			EnableDefaultAllowPatterns: true,
+			CheckQuery:                 true,
+			Methods:                    []string{"GET"},
+		}
+		if err := rw.Provision(ctx); err != nil {
+			t.Fatalf("provision error: %v", err)
+		}
+
+		// Double percent-encoded traversal
+		next := &testHandler{}
+		req := httptest.NewRequest(http.MethodGet, "/%252e%252e/.env", nil)
+		rec := httptest.NewRecorder()
+		if err := rw.ServeHTTP(rec, req, next); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if next.handled || rec.Code != http.StatusForbidden {
+			t.Errorf("expected 403 for double percent-encoded traversal, got %d", rec.Code)
+		}
+
+		// Semicolon matrix parameter evasion
+		nextMatrix := &testHandler{}
+		reqMatrix := httptest.NewRequest(http.MethodGet, "/;.env", nil)
+		recMatrix := httptest.NewRecorder()
+		if err := rw.ServeHTTP(recMatrix, reqMatrix, nextMatrix); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nextMatrix.handled || recMatrix.Code != http.StatusForbidden {
+			t.Errorf("expected 403 for /;.env, got %d", recMatrix.Code)
+		}
+
+		// Query string inspection
+		nextQuery := &testHandler{}
+		reqQuery := httptest.NewRequest(http.MethodGet, "/search?file=.env", nil)
+		recQuery := httptest.NewRecorder()
+		if err := rw.ServeHTTP(recQuery, reqQuery, nextQuery); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nextQuery.handled || recQuery.Code != http.StatusForbidden {
+			t.Errorf("expected 403 for ?file=.env, got %d", recQuery.Code)
+		}
+
+		// Encoded query parameter inspection
+		nextEncQuery := &testHandler{}
+		reqEncQuery := httptest.NewRequest(http.MethodGet, "/download?q=%2e%65%6e%76", nil)
+		recEncQuery := httptest.NewRecorder()
+		if err := rw.ServeHTTP(recEncQuery, reqEncQuery, nextEncQuery); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nextEncQuery.handled || recEncQuery.Code != http.StatusForbidden {
+			t.Errorf("expected 403 for ?q=%%2e%%65%%6e%%76, got %d", recEncQuery.Code)
+		}
+	})
+
+	t.Run("Section 3: Pattern Allowlist & IP Whitelist Flags (:8080)", func(t *testing.T) {
+		rw := &caddywarden.RouteWarden{
+			Enabled:                    true,
+			EnableDefaultPatterns:      true,
+			EnableDefaultAllowPatterns: true,
+			PathPatterns:               []string{`(?i)^/admin/secret.*$`},
+			AllowPatterns:              []string{`(?i)^/api/healthz$`},
+			AllowedIPs:                 []string{"192.168.100.50", "10.99.0.0/16"},
+			Methods:                    []string{"GET"},
+		}
+		if err := rw.Provision(ctx); err != nil {
+			t.Fatalf("provision error: %v", err)
+		}
+
+		// Default allowlist exemption: /robots.txt
+		nextRobots := &testHandler{}
+		reqRobots := httptest.NewRequest(http.MethodGet, "/robots.txt", nil)
+		recRobots := httptest.NewRecorder()
+		if err := rw.ServeHTTP(recRobots, reqRobots, nextRobots); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !nextRobots.handled || recRobots.Code != http.StatusOK {
+			t.Errorf("expected 200 for /robots.txt, got %d", recRobots.Code)
+		}
+
+		// Custom allow pattern: /api/healthz
+		nextHealth := &testHandler{}
+		reqHealth := httptest.NewRequest(http.MethodGet, "/api/healthz", nil)
+		recHealth := httptest.NewRecorder()
+		if err := rw.ServeHTTP(recHealth, reqHealth, nextHealth); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !nextHealth.handled || recHealth.Code != http.StatusOK {
+			t.Errorf("expected 200 for /api/healthz, got %d", recHealth.Code)
+		}
+
+		// Custom path_patterns: /admin/secret-keys
+		nextAdmin := &testHandler{}
+		reqAdmin := httptest.NewRequest(http.MethodGet, "/admin/secret-keys", nil)
+		recAdmin := httptest.NewRecorder()
+		if err := rw.ServeHTTP(recAdmin, reqAdmin, nextAdmin); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nextAdmin.handled || recAdmin.Code != http.StatusForbidden {
+			t.Errorf("expected 403 for /admin/secret-keys, got %d", recAdmin.Code)
+		}
+
+		// Whitelisted IP bypass (192.168.100.50)
+		nextIPAllowed := &testHandler{}
+		reqIPAllowed := httptest.NewRequest(http.MethodGet, "/.env", nil)
+		reqIPAllowed.Header.Set("X-Forwarded-For", "192.168.100.50")
+		recIPAllowed := httptest.NewRecorder()
+		if err := rw.ServeHTTP(recIPAllowed, reqIPAllowed, nextIPAllowed); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !nextIPAllowed.handled || recIPAllowed.Code != http.StatusOK {
+			t.Errorf("expected 200 for whitelisted IP bypassing /.env, got %d", recIPAllowed.Code)
+		}
+
+		// Non-whitelisted IP blocked (8.8.8.8)
+		nextIPBlocked := &testHandler{}
+		reqIPBlocked := httptest.NewRequest(http.MethodGet, "/.env", nil)
+		reqIPBlocked.Header.Set("X-Forwarded-For", "8.8.8.8")
+		recIPBlocked := httptest.NewRecorder()
+		if err := rw.ServeHTTP(recIPBlocked, reqIPBlocked, nextIPBlocked); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nextIPBlocked.handled || recIPBlocked.Code != http.StatusForbidden {
+			t.Errorf("expected 403 for non-whitelisted IP, got %d", recIPBlocked.Code)
+		}
+	})
+
+	t.Run("Section 4: All Response Modes (:8081 - :8091)", func(t *testing.T) {
+		// Port 8081: HTML mode
+		rwHTML := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: true,
+			Response: &caddywarden.ResponseConfig{
+				Mode:       "html",
+				StatusCode: 403,
+				Headers:    map[string]string{"X-RouteWarden-Mode": "html"},
+				Body:       "<html><body><h1>Access Denied by RouteWarden</h1></body></html>",
+			},
+		}
+		if err := rwHTML.Provision(ctx); err != nil {
+			t.Fatalf("provision error: %v", err)
+		}
+		recHTML := httptest.NewRecorder()
+		_ = rwHTML.ServeHTTP(recHTML, httptest.NewRequest(http.MethodGet, "/.env", nil), &testHandler{})
+		if recHTML.Code != 403 || !strings.Contains(recHTML.Body.String(), "<h1>Access Denied by RouteWarden</h1>") || !strings.Contains(recHTML.Header().Get("Content-Type"), "text/html") {
+			t.Errorf("unexpected HTML response: %d, %s, %s", recHTML.Code, recHTML.Header().Get("Content-Type"), recHTML.Body.String())
+		}
+
+		// Port 8082: Text mode
+		rwText := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: true,
+			Response: &caddywarden.ResponseConfig{
+				Mode:       "text",
+				StatusCode: 403,
+				Headers:    map[string]string{"X-RouteWarden-Mode": "text"},
+				Body:       "Access Forbidden: RouteWarden Text Mode",
+			},
+		}
+		if err := rwText.Provision(ctx); err != nil {
+			t.Fatalf("provision error: %v", err)
+		}
+		recText := httptest.NewRecorder()
+		_ = rwText.ServeHTTP(recText, httptest.NewRequest(http.MethodGet, "/.env", nil), &testHandler{})
+		if recText.Code != 403 || !strings.Contains(recText.Body.String(), "Access Forbidden: RouteWarden Text Mode") || !strings.Contains(recText.Header().Get("Content-Type"), "text/plain") {
+			t.Errorf("unexpected Text response: %d, %s, %s", recText.Code, recText.Header().Get("Content-Type"), recText.Body.String())
+		}
+
+		// Port 8083: XML mode
+		rwXML := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: true,
+			Response: &caddywarden.ResponseConfig{
+				Mode:       "xml",
+				StatusCode: 403,
+				Headers:    map[string]string{"X-RouteWarden-Mode": "xml"},
+			},
+		}
+		if err := rwXML.Provision(ctx); err != nil {
+			t.Fatalf("provision error: %v", err)
+		}
+		recXML := httptest.NewRecorder()
+		_ = rwXML.ServeHTTP(recXML, httptest.NewRequest(http.MethodGet, "/.env", nil), &testHandler{})
+		if recXML.Code != 403 || !strings.Contains(recXML.Body.String(), "<Error>") || !strings.Contains(recXML.Header().Get("Content-Type"), "application/xml") {
+			t.Errorf("unexpected XML response: %d, %s, %s", recXML.Code, recXML.Header().Get("Content-Type"), recXML.Body.String())
+		}
+
+		// Port 8084: Captcha mode (turnstile)
+		rwCaptcha := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: true,
+			Response: &caddywarden.ResponseConfig{
+				Mode:       "captcha",
+				StatusCode: 403,
+				Captcha: &caddywarden.CaptchaConfig{
+					Provider: "turnstile",
+					SiteKey:  "0x4AAAAAAtestkey",
+					Title:    "Security Verification Challenge",
+				},
+			},
+		}
+		if err := rwCaptcha.Provision(ctx); err != nil {
+			t.Fatalf("provision error: %v", err)
+		}
+		recCaptcha := httptest.NewRecorder()
+		_ = rwCaptcha.ServeHTTP(recCaptcha, httptest.NewRequest(http.MethodGet, "/.env", nil), &testHandler{})
+		if recCaptcha.Code != 403 || !strings.Contains(recCaptcha.Body.String(), "cf-turnstile") || !strings.Contains(recCaptcha.Body.String(), "0x4AAAAAAtestkey") {
+			t.Errorf("unexpected Captcha response: %d, %s", recCaptcha.Code, recCaptcha.Body.String())
+		}
+
+		// Port 8085: Redirect mode
+		rwRedirect := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: true,
+			Response: &caddywarden.ResponseConfig{
+				Mode:        "redirect",
+				StatusCode:  302,
+				RedirectURL: "https://honeypot.local/sinkhole",
+			},
+		}
+		if err := rwRedirect.Provision(ctx); err != nil {
+			t.Fatalf("provision error: %v", err)
+		}
+		recRedirect := httptest.NewRecorder()
+		_ = rwRedirect.ServeHTTP(recRedirect, httptest.NewRequest(http.MethodGet, "/.env", nil), &testHandler{})
+		if recRedirect.Code != 302 || recRedirect.Header().Get("Location") != "https://honeypot.local/sinkhole" {
+			t.Errorf("unexpected Redirect response: %d, Location: %s", recRedirect.Code, recRedirect.Header().Get("Location"))
+		}
+
+		// Port 8086: RateLimitChallenge mode
+		rwRate := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: true,
+			Response: &caddywarden.ResponseConfig{
+				Mode:              "rateLimitChallenge",
+				StatusCode:        429,
+				RetryAfterSeconds: 180,
+			},
+		}
+		if err := rwRate.Provision(ctx); err != nil {
+			t.Fatalf("provision error: %v", err)
+		}
+		recRate := httptest.NewRecorder()
+		_ = rwRate.ServeHTTP(recRate, httptest.NewRequest(http.MethodGet, "/.env", nil), &testHandler{})
+		if recRate.Code != 429 || recRate.Header().Get("Retry-After") != "180" || !strings.Contains(recRate.Body.String(), "Too Many Requests") {
+			t.Errorf("unexpected RateLimit response: %d, Retry-After: %s, Body: %s", recRate.Code, recRate.Header().Get("Retry-After"), recRate.Body.String())
+		}
+
+		// Port 8087: FakeSuccess / Decoy mode
+		rwFake := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: true,
+			Response: &caddywarden.ResponseConfig{
+				Mode: "fakeSuccess",
+			},
+		}
+		if err := rwFake.Provision(ctx); err != nil {
+			t.Fatalf("provision error: %v", err)
+		}
+		recFake := httptest.NewRecorder()
+		_ = rwFake.ServeHTTP(recFake, httptest.NewRequest(http.MethodGet, "/.env", nil), &testHandler{})
+		if recFake.Code != 200 || !strings.Contains(recFake.Body.String(), "APP_NAME=Laravel") || !strings.Contains(recFake.Body.String(), "DB_PASSWORD=") {
+			t.Errorf("unexpected FakeSuccess response: %d, Body: %s", recFake.Code, recFake.Body.String())
+		}
+
+		// Port 8088: GzipBomb mode
+		rwBomb := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: true,
+			Response: &caddywarden.ResponseConfig{
+				Mode:        "gzipBomb",
+				StatusCode:  200,
+				GzipBombMB:  1,
+			},
+		}
+		if err := rwBomb.Provision(ctx); err != nil {
+			t.Fatalf("provision error: %v", err)
+		}
+		recBomb := httptest.NewRecorder()
+		_ = rwBomb.ServeHTTP(recBomb, httptest.NewRequest(http.MethodGet, "/.env", nil), &testHandler{})
+		if recBomb.Header().Get("Content-Encoding") != "gzip" {
+			t.Errorf("expected gzip Content-Encoding, got %s", recBomb.Header().Get("Content-Encoding"))
+		}
+
+		// Port 8089: SilentDrop mode
+		rwDrop := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: true,
+			Response: &caddywarden.ResponseConfig{
+				Mode: "silentDrop",
+			},
+		}
+		if err := rwDrop.Provision(ctx); err != nil {
+			t.Fatalf("provision error: %v", err)
+		}
+		recDrop := httptest.NewRecorder()
+		_ = rwDrop.ServeHTTP(recDrop, httptest.NewRequest(http.MethodGet, "/.env", nil), &testHandler{})
+		if recDrop.Code != 403 {
+			t.Errorf("expected 403 status fallback for SilentDrop in test recorder, got %d", recDrop.Code)
+		}
+
+		// Port 8090: InfiniteStream mode
+		rwStream := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: true,
+			Response: &caddywarden.ResponseConfig{
+				Mode:         "infiniteStream",
+				StatusCode:   200,
+				StreamSizeMB: 1,
+			},
+		}
+		if err := rwStream.Provision(ctx); err != nil {
+			t.Fatalf("provision error: %v", err)
+		}
+		recStream := httptest.NewRecorder()
+		_ = rwStream.ServeHTTP(recStream, httptest.NewRequest(http.MethodGet, "/.env", nil), &testHandler{})
+		if recStream.Code != 200 || recStream.Body.Len() == 0 {
+			t.Errorf("expected non-empty stream with 200, got code %d and len %d", recStream.Code, recStream.Body.Len())
+		}
+	})
+
+	t.Run("Section 5: Operational Flags: disable & methods (:8092, :8093)", func(t *testing.T) {
+		// Port 8092: disable flag
+		rwDisabled := &caddywarden.RouteWarden{
+			Enabled:               false,
+			EnableDefaultPatterns: true,
+		}
+		if err := rwDisabled.Provision(ctx); err != nil {
+			t.Fatalf("provision error: %v", err)
+		}
+		nextDisabled := &testHandler{}
+		reqDisabled := httptest.NewRequest(http.MethodGet, "/.env", nil)
+		recDisabled := httptest.NewRecorder()
+		if err := rwDisabled.ServeHTTP(recDisabled, reqDisabled, nextDisabled); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !nextDisabled.handled || recDisabled.Code != http.StatusOK {
+			t.Errorf("expected disabled RouteWarden to bypass to upstream with 200, got %d", recDisabled.Code)
+		}
+
+		// Port 8093: methods filter (inspects only POST & DELETE)
+		rwMethods := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: true,
+			Methods:               []string{"POST", "DELETE"},
+			Response: &caddywarden.ResponseConfig{
+				Mode:       "json",
+				StatusCode: 403,
+			},
+		}
+		if err := rwMethods.Provision(ctx); err != nil {
+			t.Fatalf("provision error: %v", err)
+		}
+
+		// GET should bypass
+		nextGet := &testHandler{}
+		reqGet := httptest.NewRequest(http.MethodGet, "/.env", nil)
+		recGet := httptest.NewRecorder()
+		if err := rwMethods.ServeHTTP(recGet, reqGet, nextGet); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !nextGet.handled || recGet.Code != http.StatusOK {
+			t.Errorf("expected GET to bypass methods filter with 200, got %d", recGet.Code)
+		}
+
+		// POST should be inspected and blocked
+		nextPost := &testHandler{}
+		reqPost := httptest.NewRequest(http.MethodPost, "/.env", nil)
+		recPost := httptest.NewRecorder()
+		if err := rwMethods.ServeHTTP(recPost, reqPost, nextPost); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nextPost.handled || recPost.Code != http.StatusForbidden {
+			t.Errorf("expected POST to be blocked with 403, got %d", recPost.Code)
+		}
+
+		// DELETE should be inspected and blocked
+		nextDelete := &testHandler{}
+		reqDelete := httptest.NewRequest(http.MethodDelete, "/.env", nil)
+		recDelete := httptest.NewRecorder()
+		if err := rwMethods.ServeHTTP(recDelete, reqDelete, nextDelete); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nextDelete.handled || recDelete.Code != http.StatusForbidden {
+			t.Errorf("expected DELETE to be blocked with 403, got %d", recDelete.Code)
+		}
+	})
+}

@@ -55,7 +55,7 @@ func DefaultResponseConfig() *ResponseConfig {
 	return &ResponseConfig{
 		Mode:                     "json",
 		StatusCode:               403,
-		Body:                     `{"error":"Forbidden","message":"Access to sensitive endpoint is blocked","status":403}`,
+		Body:                     "",
 		GzipBombMB:               10,
 		RetryAfterSeconds:        300,
 		TarpitDelayMs:            1000,
