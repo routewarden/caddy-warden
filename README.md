@@ -250,6 +250,32 @@ routewarden {
 
 ---
 
+## CLI & Config Generation
+
+You can use the official [`rwarden`](https://routewarden.github.io/cli/) CLI tool to test path rules offline, validate configurations, and automatically generate Caddyfile directive blocks directly from a unified `routewarden.json` schema:
+
+```bash
+# Install RouteWarden CLI
+curl -fsSL https://routewarden.github.io/cli/install.sh | bash
+
+# Or run via Docker
+docker run --rm ghcr.io/routewarden/cli:latest version
+```
+
+### Generating Caddyfile Directives:
+
+```bash
+# Generate Caddyfile routewarden directive block
+rwarden generate --target caddy --config routewarden.json
+
+# Test a suspicious probe path against rules offline
+rwarden test --path "/.env"
+```
+
+For complete documentation on the CLI, installation methods, and options, visit the **[RouteWarden CLI Documentation](https://routewarden.github.io/cli/)**.
+
+---
+
 ## Documentation & Integrations
 
 For complete guides, configuration references, and integration recipes, visit the official documentation:

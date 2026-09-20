@@ -34,6 +34,7 @@ type RouteWarden struct {
 	AllowedIPs                 []string        `json:"allowed_ips,omitempty"`
 	Methods                    []string        `json:"methods,omitempty"`
 	CheckQuery                 bool            `json:"check_query,omitempty"`
+	CheckHeaders               []string        `json:"check_headers,omitempty"`
 	StatusCode                 int             `json:"status_code,omitempty"`
 	CustomResponseText         string          `json:"custom_response_text,omitempty"`
 	SilentDrop                 bool            `json:"silent_drop,omitempty"`
@@ -288,6 +289,41 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 							zap.String("matched_pattern", blockedByPattern),
 						)
 					}
+					break
+				}
+			}
+			if isBlocked {
+				break
+			}
+		}
+	}
+
+	// Optional: Check Forwarded/Rewrite Headers
+	if !isBlocked && len(rw.CheckHeaders) > 0 {
+		for _, headerName := range rw.CheckHeaders {
+			headerVal := strings.TrimSpace(req.Header.Get(headerName))
+			if headerVal == "" {
+				continue
+			}
+			headerCandidates := ExtractCandidatePaths("", headerVal, headerVal)
+			for _, hc := range headerCandidates {
+				for _, re := range rw.compiledBlock {
+					if re.MatchString(hc) {
+						isBlocked = true
+						blockedByPattern = re.String()
+						blockedTarget = headerVal
+						blockedReason = "header_blocked"
+						if rw.Debug && rw.logger != nil {
+							rw.logger.Debug("routewarden: header candidate matched block pattern",
+								zap.String("header", headerName),
+								zap.String("candidate_value", hc),
+								zap.String("matched_pattern", blockedByPattern),
+							)
+						}
+						break
+					}
+				}
+				if isBlocked {
 					break
 				}
 			}

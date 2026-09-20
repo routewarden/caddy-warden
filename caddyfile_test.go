@@ -458,4 +458,19 @@ func TestCaddyfile_MethodsDirective(t *testing.T) {
 			t.Fatalf("expected unmarshaled module to have Enabled=false, got true")
 		}
 	})
+
+	t.Run("check_headers parsing", func(t *testing.T) {
+		cfg := `routewarden {
+			check_headers X-Forwarded-Uri X-Rewrite-URL
+		}`
+		d := caddyfile.NewTestDispenser(cfg)
+		rw := &caddywarden.RouteWarden{}
+		if err := rw.UnmarshalCaddyfile(d); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+		if len(rw.CheckHeaders) != 2 || rw.CheckHeaders[0] != "X-Forwarded-Uri" || rw.CheckHeaders[1] != "X-Rewrite-URL" {
+			t.Fatalf("unexpected CheckHeaders: %v", rw.CheckHeaders)
+		}
+	})
 }
+

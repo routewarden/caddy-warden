@@ -171,3 +171,16 @@
     }
     respond "OK: Upstream Reached (8093)" 200
 }
+
+# 15. Port 8094: Header inspection (check_headers — blocks path-evasion via X-Forwarded-Uri / X-Rewrite-URL)
+:8094 {
+    routewarden {
+        check_headers X-Forwarded-Uri X-Rewrite-URL
+        response {
+            mode json
+            status 403
+            body "{\"error\":\"Blocked\",\"reason\":\"Sensitive path detected in forwarded header\"}"
+        }
+    }
+    respond "OK: Upstream Reached (8094)" 200
+}
