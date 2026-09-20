@@ -54,7 +54,7 @@ Then build Caddy with RouteWarden:
 ```bash
 # Pin to a specific version (recommended for production)
 xcaddy build \
-    --with github.com/routewarden/caddy-warden@v1.0.0
+    --with github.com/routewarden/caddy-warden@v1.1.0
 
 # Or build using the latest version
 xcaddy build \
@@ -79,7 +79,7 @@ Use Caddy's official multi-stage builder to create your image:
 FROM caddy:2.9-builder AS builder
 
 RUN xcaddy build \
-    --with github.com/routewarden/caddy-warden@v1.0.0
+    --with github.com/routewarden/caddy-warden@v1.1.0
 
 FROM caddy:2.9-alpine
 
@@ -125,7 +125,7 @@ volumes:
 If you build your own Caddy binary in Go, import RouteWarden for automatic registration:
 
 ```bash
-go get github.com/routewarden/caddy-warden@v1.0.0
+go get github.com/routewarden/caddy-warden@v1.1.0
 ```
 
 ```go
@@ -247,6 +247,32 @@ routewarden {
     }
 }
 ```
+
+---
+
+## CLI & Config Generation
+
+You can use the official [`rwarden`](https://routewarden.github.io/cli/) CLI tool to test path rules offline, validate configurations, and automatically generate Caddyfile directive blocks directly from a unified `routewarden.json` schema:
+
+```bash
+# Install RouteWarden CLI
+curl -fsSL https://routewarden.github.io/cli/install.sh | bash
+
+# Or run via Docker
+docker run --rm ghcr.io/routewarden/cli:latest version
+```
+
+### Generating Caddyfile Directives:
+
+```bash
+# Generate Caddyfile routewarden directive block
+rwarden generate --target caddy --config routewarden.json
+
+# Test a suspicious probe path against rules offline
+rwarden test --path "/.env"
+```
+
+For complete documentation on the CLI, installation methods, and options, visit the **[RouteWarden CLI Documentation](https://routewarden.github.io/cli/)**.
 
 ---
 

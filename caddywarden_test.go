@@ -1228,4 +1228,71 @@ func TestRouteWarden_LiveSamplesParitySuite(t *testing.T) {
 			t.Errorf("expected DELETE to be blocked with 403, got %d", recDelete.Code)
 		}
 	})
+
+	t.Run("Expanded default block patterns (keys, container, wp-config, ds_store)", func(t *testing.T) {
+		rw := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: true,
+		}
+		if err := rw.Provision(ctx); err != nil {
+			t.Fatalf("unexpected provision error: %v", err)
+		}
+
+		paths := []string{
+			"/server.key",
+			"/cert.pem",
+			"/Dockerfile",
+			"/docker-compose.yml",
+			"/.DS_Store",
+			"/wp-config.php",
+		}
+
+		for _, p := range paths {
+			next := &testHandler{}
+			req := httptest.NewRequest(http.MethodGet, p, nil)
+			rec := httptest.NewRecorder()
+			if err := rw.ServeHTTP(rec, req, next); err != nil {
+				t.Fatalf("unexpected error on %s: %v", p, err)
+			}
+			if next.handled || rec.Code != http.StatusForbidden {
+				t.Errorf("expected %s to be blocked by default patterns, got code %d", p, rec.Code)
+			}
+		}
+	})
+
+	t.Run("CheckHeaders inspection", func(t *testing.T) {
+		rw := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: true,
+			CheckHeaders:          []string{"X-Forwarded-Uri", "X-Rewrite-URL"},
+		}
+		if err := rw.Provision(ctx); err != nil {
+			t.Fatalf("unexpected provision error: %v", err)
+		}
+
+		// Benign header passes
+		nextClean := &testHandler{}
+		reqClean := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+		reqClean.Header.Set("X-Forwarded-Uri", "/dashboard")
+		recClean := httptest.NewRecorder()
+		if err := rw.ServeHTTP(recClean, reqClean, nextClean); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !nextClean.handled || recClean.Code != http.StatusOK {
+			t.Errorf("expected 200 for benign header, got %d", recClean.Code)
+		}
+
+		// Smuggled .env in X-Forwarded-Uri gets blocked
+		nextSmuggled := &testHandler{}
+		reqSmuggled := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+		reqSmuggled.Header.Set("X-Forwarded-Uri", "/.env")
+		recSmuggled := httptest.NewRecorder()
+		if err := rw.ServeHTTP(recSmuggled, reqSmuggled, nextSmuggled); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nextSmuggled.handled || recSmuggled.Code != http.StatusForbidden {
+			t.Errorf("expected 403 for smuggled .env in header, got %d", recSmuggled.Code)
+		}
+	})
 }
+
