@@ -58,6 +58,16 @@ func TestRouteWarden_Validate(t *testing.T) {
 	if err := rwNilResp.Validate(); err != nil {
 		t.Errorf("unexpected error when Response is nil: %v", err)
 	}
+
+	// Validate top-level StatusCode
+	rwTopInvalid := &caddywarden.RouteWarden{StatusCode: 999}
+	if err := rwTopInvalid.Validate(); err == nil {
+		t.Errorf("expected error for invalid top-level StatusCode 999, got nil")
+	}
+	rwTopValid := &caddywarden.RouteWarden{StatusCode: 403}
+	if err := rwTopValid.Validate(); err != nil {
+		t.Errorf("unexpected error for valid top-level StatusCode 403: %v", err)
+	}
 }
 
 func TestRouteWarden_ProvisionErrors(t *testing.T) {
@@ -464,6 +474,30 @@ func TestRouteWarden_CheckQuery_EdgeCases(t *testing.T) {
 		}
 		if !next.handled || rec.Code != http.StatusOK {
 			t.Errorf("expected 200 for no query string, got %d", rec.Code)
+		}
+	})
+
+	t.Run("Query parameter key matches sensitive pattern", func(t *testing.T) {
+		next := &testHandler{}
+		req := httptest.NewRequest(http.MethodGet, "/search?foo=bar&.env=1", nil)
+		rec := httptest.NewRecorder()
+		if err := rw.ServeHTTP(rec, req, next); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if next.handled || rec.Code != http.StatusForbidden {
+			t.Errorf("expected 403 when query key is .env, got %d", rec.Code)
+		}
+	})
+
+	t.Run("Query parameter value with path traversal", func(t *testing.T) {
+		next := &testHandler{}
+		req := httptest.NewRequest(http.MethodGet, "/search?file=/images/../.env", nil)
+		rec := httptest.NewRecorder()
+		if err := rw.ServeHTTP(rec, req, next); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if next.handled || rec.Code != http.StatusForbidden {
+			t.Errorf("expected 403 when query value normalizes to .env, got %d", rec.Code)
 		}
 	})
 }

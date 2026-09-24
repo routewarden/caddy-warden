@@ -64,21 +64,21 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					rw.SecurityLog = args[0] == "true" || args[0] == "1" || args[0] == "yes" || args[0] == "on"
 				}
 
-			case "path_patterns", "block_patterns":
+			case "path_patterns", "block_patterns", "path_pattern", "block_pattern":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
 					return d.ArgErr()
 				}
 				rw.PathPatterns = append(rw.PathPatterns, args...)
 
-			case "allow_patterns":
+			case "allow_patterns", "allow_pattern":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
 					return d.ArgErr()
 				}
 				rw.AllowPatterns = append(rw.AllowPatterns, args...)
 
-			case "allowed_ips":
+			case "allowed_ips", "allowed_ip":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
 					return d.ArgErr()
