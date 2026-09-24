@@ -472,5 +472,75 @@ func TestCaddyfile_MethodsDirective(t *testing.T) {
 			t.Fatalf("unexpected CheckHeaders: %v", rw.CheckHeaders)
 		}
 	})
+
+	t.Run("mode silent_drop and silentDrop configuration", func(t *testing.T) {
+		tests := []struct {
+			name        string
+			caddyfile   string
+			wantMode    string
+		}{
+			{
+				name: "top-level mode silent_drop",
+				caddyfile: `routewarden {
+					mode silent_drop
+				}`,
+				wantMode: "silentDrop",
+			},
+			{
+				name: "top-level mode silentDrop",
+				caddyfile: `routewarden {
+					mode silentDrop
+				}`,
+				wantMode: "silentDrop",
+			},
+			{
+				name: "response block mode silent_drop",
+				caddyfile: `routewarden {
+					response {
+						mode silent_drop
+					}
+				}`,
+				wantMode: "silentDrop",
+			},
+			{
+				name: "response block mode silentDrop",
+				caddyfile: `routewarden {
+					response {
+						mode silentDrop
+					}
+				}`,
+				wantMode: "silentDrop",
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				d := caddyfile.NewTestDispenser(tc.caddyfile)
+				rw := &caddywarden.RouteWarden{}
+				if err := rw.UnmarshalCaddyfile(d); err != nil {
+					t.Fatalf("failed to unmarshal: %v", err)
+				}
+				ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+				if err := rw.Provision(ctx); err != nil {
+					t.Fatalf("failed to provision: %v", err)
+				}
+				if rw.Response.Mode != tc.wantMode {
+					t.Errorf("expected Response.Mode=%q, got %q", tc.wantMode, rw.Response.Mode)
+				}
+			})
+		}
+	})
+
+	t.Run("legacy silent_drop directive rejected", func(t *testing.T) {
+		caddyfileSnippet := `routewarden {
+			silent_drop
+		}`
+		d := caddyfile.NewTestDispenser(caddyfileSnippet)
+		rw := &caddywarden.RouteWarden{}
+		err := rw.UnmarshalCaddyfile(d)
+		if err == nil {
+			t.Fatal("expected error for unmarshaling unrecognized legacy silent_drop directive, got nil")
+		}
+	})
 }
 
