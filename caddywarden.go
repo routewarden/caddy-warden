@@ -37,7 +37,7 @@ type RouteWarden struct {
 	CheckHeaders               []string        `json:"check_headers,omitempty"`
 	StatusCode                 int             `json:"status_code,omitempty"`
 	CustomResponseText         string          `json:"custom_response_text,omitempty"`
-	SilentDrop                 bool            `json:"silent_drop,omitempty"`
+	Mode                       string          `json:"mode,omitempty"`
 	Debug                      bool            `json:"debug,omitempty"`
 	SecurityLog                bool            `json:"security_log,omitempty"`
 	Response                   *ResponseConfig `json:"response,omitempty"`
@@ -72,6 +72,14 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 
 	if rw.Response == nil {
 		rw.Response = DefaultResponseConfig()
+	}
+
+	// Response action is configured via mode
+	if rw.Mode != "" && (rw.Response.Mode == "" || rw.Response.Mode == "text") {
+		rw.Response.Mode = rw.Mode
+	}
+	if strings.EqualFold(rw.Response.Mode, "silent_drop") {
+		rw.Response.Mode = "silentDrop"
 	}
 
 	// Initialize Methods Filter (defaults to ["GET"])
@@ -140,7 +148,8 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 	}
 
 	// 4. Initialize Response Handler
-	respHandler, err := NewResponseHandler(rw.Response, rw.StatusCode, rw.CustomResponseText, rw.SilentDrop)
+	isSilentDrop := strings.EqualFold(rw.Response.Mode, "silentdrop")
+	respHandler, err := NewResponseHandler(rw.Response, rw.StatusCode, rw.CustomResponseText, isSilentDrop)
 	if err != nil {
 		return fmt.Errorf("routewarden: invalid response config: %w", err)
 	}
@@ -365,8 +374,6 @@ func (rw *RouteWarden) logSecurityEvent(r *http.Request, matchedTarget string, p
 	mode := "text"
 	if rw.Response != nil && rw.Response.Mode != "" {
 		mode = rw.Response.Mode
-	} else if rw.SilentDrop {
-		mode = "silentDrop"
 	}
 	clientIP := ExtractClientIP(r)
 

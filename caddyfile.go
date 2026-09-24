@@ -2,6 +2,7 @@ package caddywarden
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
@@ -84,8 +85,15 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 				rw.AllowedIPs = append(rw.AllowedIPs, args...)
 
-			case "silent_drop":
-				rw.SilentDrop = true
+			case "mode":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				val := d.Val()
+				if strings.EqualFold(val, "silent_drop") {
+					val = "silentDrop"
+				}
+				rw.Response.Mode = val
 
 			case "status_code", "status":
 				if !d.NextArg() {
@@ -111,7 +119,11 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 						if !d.NextArg() {
 							return d.ArgErr()
 						}
-						rw.Response.Mode = d.Val()
+						val := d.Val()
+						if strings.EqualFold(val, "silent_drop") {
+							val = "silentDrop"
+						}
+						rw.Response.Mode = val
 
 					case "status", "status_code":
 						if !d.NextArg() {
