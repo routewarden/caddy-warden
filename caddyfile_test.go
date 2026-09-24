@@ -542,5 +542,29 @@ func TestCaddyfile_MethodsDirective(t *testing.T) {
 			t.Fatal("expected error for unmarshaling unrecognized legacy silent_drop directive, got nil")
 		}
 	})
+
+	t.Run("singular directive aliases", func(t *testing.T) {
+		snippet := `routewarden {
+			path_pattern (?i)^/singular-path$
+			block_pattern (?i)^/singular-block$
+			allow_pattern (?i)^/singular-allow$
+			allowed_ip 192.168.1.1
+		}`
+		d := caddyfile.NewTestDispenser(snippet)
+		rw := &caddywarden.RouteWarden{}
+		if err := rw.UnmarshalCaddyfile(d); err != nil {
+			t.Fatalf("unexpected unmarshal error: %v", err)
+		}
+		if len(rw.PathPatterns) != 2 {
+			t.Errorf("expected 2 PathPatterns from path_pattern and block_pattern, got %d", len(rw.PathPatterns))
+		}
+		if len(rw.AllowPatterns) != 1 || rw.AllowPatterns[0] != "(?i)^/singular-allow$" {
+			t.Errorf("expected 1 AllowPattern from allow_pattern, got %v", rw.AllowPatterns)
+		}
+		if len(rw.AllowedIPs) != 1 || rw.AllowedIPs[0] != "192.168.1.1" {
+			t.Errorf("expected 1 AllowedIP from allowed_ip, got %v", rw.AllowedIPs)
+		}
+	})
 }
+
 

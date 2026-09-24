@@ -148,7 +148,7 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 	}
 
 	// 4. Initialize Response Handler
-	isSilentDrop := strings.EqualFold(rw.Response.Mode, "silentdrop")
+	isSilentDrop := strings.EqualFold(rw.Response.Mode, "silentdrop") || strings.EqualFold(rw.Response.Mode, "silent_drop") || strings.EqualFold(rw.Response.Mode, "drop")
 	respHandler, err := NewResponseHandler(rw.Response, rw.StatusCode, rw.CustomResponseText, isSilentDrop)
 	if err != nil {
 		return fmt.Errorf("routewarden: invalid response config: %w", err)
@@ -172,6 +172,9 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 
 // Validate ensures the configuration is valid.
 func (rw *RouteWarden) Validate() error {
+	if rw.StatusCode != 0 && (rw.StatusCode < 100 || rw.StatusCode > 599) {
+		return fmt.Errorf("routewarden: statusCode must be between 100 and 599, got %d", rw.StatusCode)
+	}
 	if rw.Response != nil && rw.Response.StatusCode != 0 {
 		if rw.Response.StatusCode < 100 || rw.Response.StatusCode > 599 {
 			return fmt.Errorf("routewarden: statusCode must be between 100 and 599, got %d", rw.Response.StatusCode)
@@ -273,7 +276,9 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 
 		queryCandidates := []string{req.URL.RawQuery, unescapedQuery}
 		if parsedQuery, err := url.ParseQuery(req.URL.RawQuery); err == nil {
-			for _, vals := range parsedQuery {
+			for key, vals := range parsedQuery {
+				queryCandidates = append(queryCandidates, key)
+				queryCandidates = append(queryCandidates, ExtractCandidatePaths("", key, key)...)
 				for _, v := range vals {
 					queryCandidates = append(queryCandidates, v)
 					queryCandidates = append(queryCandidates, ExtractCandidatePaths(v, v, v)...)
@@ -345,8 +350,10 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 	if isBlocked {
 		rw.logSecurityEvent(req, blockedTarget, blockedByPattern, blockedReason)
 		if rw.logger != nil {
+			clientIP := ExtractClientIP(req)
 			rw.logger.Warn("routewarden: blocked sensitive request",
-				zap.String("client_ip", req.RemoteAddr),
+				zap.String("client_ip", clientIP),
+				zap.String("remote_addr", req.RemoteAddr),
 				zap.String("path", req.URL.Path),
 				zap.String("pattern", blockedByPattern),
 				zap.String("mode", rw.Response.Mode),
@@ -372,7 +379,13 @@ func (rw *RouteWarden) logSecurityEvent(r *http.Request, matchedTarget string, p
 		return
 	}
 	mode := "text"
-	if rw.Response != nil && rw.Response.Mode != "" {
+	if rw.responseHandler != nil {
+		if rw.responseHandler.silentDrop {
+			mode = "silentDrop"
+		} else if rw.responseHandler.config != nil && rw.responseHandler.config.Mode != "" {
+			mode = rw.responseHandler.config.Mode
+		}
+	} else if rw.Response != nil && rw.Response.Mode != "" {
 		mode = rw.Response.Mode
 	}
 	clientIP := ExtractClientIP(r)
