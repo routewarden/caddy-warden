@@ -752,7 +752,9 @@ func TestRouteWarden_SecurityLog(t *testing.T) {
 		Enabled:               true,
 		EnableDefaultPatterns: true,
 		SecurityLog:           true,
-		SilentDrop:            true,
+		Response: &caddywarden.ResponseConfig{
+			Mode: "silentDrop",
+		},
 	}
 	if err := rwDrop.Provision(ctx); err != nil {
 		t.Fatalf("unexpected provision error: %v", err)
