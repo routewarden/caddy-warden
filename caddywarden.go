@@ -32,6 +32,7 @@ type RouteWarden struct {
 	BlockPatterns              []string        `json:"block_patterns,omitempty"`
 	AllowPatterns              []string        `json:"allow_patterns,omitempty"`
 	AllowedIPs                 []string        `json:"allowed_ips,omitempty"`
+	TrustedProxies             []string        `json:"trusted_proxies,omitempty"`
 	Methods                    []string        `json:"methods,omitempty"`
 	CheckQuery                 bool            `json:"check_query,omitempty"`
 	CheckHeaders               []string        `json:"check_headers,omitempty"`
@@ -78,7 +79,7 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 	if rw.Mode != "" && (rw.Response.Mode == "" || rw.Response.Mode == "text") {
 		rw.Response.Mode = rw.Mode
 	}
-	if strings.EqualFold(rw.Response.Mode, "silent_drop") {
+	if strings.EqualFold(rw.Response.Mode, "silent_drop") || strings.EqualFold(rw.Response.Mode, "silentdrop") || strings.EqualFold(rw.Response.Mode, "drop") {
 		rw.Response.Mode = "silentDrop"
 	}
 
@@ -139,10 +140,10 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 	}
 
 	// 3. Initialize IP Filter
-	if len(rw.AllowedIPs) > 0 {
-		filter, err := NewIPFilter(rw.AllowedIPs)
+	if len(rw.AllowedIPs) > 0 || len(rw.TrustedProxies) > 0 {
+		filter, err := NewIPFilter(rw.AllowedIPs, rw.TrustedProxies)
 		if err != nil {
-			return fmt.Errorf("routewarden: invalid allowed_ips config: %w", err)
+			return fmt.Errorf("routewarden: invalid ip filter config: %w", err)
 		}
 		rw.ipFilter = filter
 	}
@@ -161,6 +162,7 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 			zap.Int("compiled_block_patterns", len(rw.compiledBlock)),
 			zap.Int("compiled_allow_patterns", len(rw.compiledAllow)),
 			zap.Int("allowed_ips", len(rw.AllowedIPs)),
+			zap.Int("trusted_proxies", len(rw.TrustedProxies)),
 			zap.Strings("methods", rw.Methods),
 			zap.Bool("check_query", rw.CheckQuery),
 			zap.String("response_mode", rw.Response.Mode),
@@ -183,6 +185,13 @@ func (rw *RouteWarden) Validate() error {
 	return nil
 }
 
+func (rw *RouteWarden) extractClientIP(req *http.Request) string {
+	if rw.ipFilter != nil {
+		return rw.ipFilter.ExtractClientIP(req)
+	}
+	return ExtractClientIP(req)
+}
+
 // ServeHTTP implements caddyhttp.MiddlewareHandler.
 func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyhttp.Handler) error {
 	if !rw.Enabled {
@@ -202,7 +211,7 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 
 	// Stage 1: IP Whitelist bypass
 	if rw.ipFilter != nil {
-		clientIP := ExtractClientIP(req)
+		clientIP := rw.extractClientIP(req)
 		allowed := rw.ipFilter.IsAllowed(req)
 		if rw.Debug && rw.logger != nil {
 			rw.logger.Debug("routewarden: evaluated client ip",
@@ -319,7 +328,7 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 			if headerVal == "" {
 				continue
 			}
-			headerCandidates := ExtractCandidatePaths("", headerVal, headerVal)
+			headerCandidates := append([]string{headerVal}, ExtractCandidatePaths("", headerVal, headerVal)...)
 			for _, hc := range headerCandidates {
 				for _, re := range rw.compiledBlock {
 					if re.MatchString(hc) {
@@ -350,7 +359,7 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 	if isBlocked {
 		rw.logSecurityEvent(req, blockedTarget, blockedByPattern, blockedReason)
 		if rw.logger != nil {
-			clientIP := ExtractClientIP(req)
+			clientIP := rw.extractClientIP(req)
 			rw.logger.Warn("routewarden: blocked sensitive request",
 				zap.String("client_ip", clientIP),
 				zap.String("remote_addr", req.RemoteAddr),
@@ -388,7 +397,7 @@ func (rw *RouteWarden) logSecurityEvent(r *http.Request, matchedTarget string, p
 	} else if rw.Response != nil && rw.Response.Mode != "" {
 		mode = rw.Response.Mode
 	}
-	clientIP := ExtractClientIP(r)
+	clientIP := rw.extractClientIP(r)
 
 	// If using Caddy's zap logger:
 	if rw.logger != nil {

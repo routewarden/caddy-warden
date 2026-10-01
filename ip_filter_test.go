@@ -13,7 +13,7 @@ func TestIPFilter_Unit(t *testing.T) {
 		"192.168.1.10",
 		"10.0.0.0/16",
 		"2001:db8::/32",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error creating IPFilter: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestIPFilter_Unit(t *testing.T) {
 }
 
 func TestIPFilter_EmptyFilter(t *testing.T) {
-	filter, err := caddywarden.NewIPFilter([]string{})
+	filter, err := caddywarden.NewIPFilter([]string{}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -84,20 +84,25 @@ func TestIPFilter_EmptyFilter(t *testing.T) {
 }
 
 func TestIPFilter_InvalidInputs(t *testing.T) {
-	_, err := caddywarden.NewIPFilter([]string{"999.999.999.999"})
+	_, err := caddywarden.NewIPFilter([]string{"999.999.999.999"}, nil)
 	if err == nil {
 		t.Errorf("expected error for invalid IP address")
 	}
 
-	_, err2 := caddywarden.NewIPFilter([]string{"10.0.0.0/999"})
+	_, err2 := caddywarden.NewIPFilter([]string{"10.0.0.0/999"}, nil)
 	if err2 == nil {
 		t.Errorf("expected error for invalid CIDR subnet")
+	}
+
+	_, err3 := caddywarden.NewIPFilter([]string{"10.0.0.1"}, []string{"invalid-proxy"})
+	if err3 == nil {
+		t.Errorf("expected error for invalid trusted proxy")
 	}
 }
 
 func TestIPFilter_WhitespaceAndEmptyEntries(t *testing.T) {
 	// Empty and whitespace-only entries should be cleanly ignored
-	filter, err := caddywarden.NewIPFilter([]string{"", "  ", "\t", "192.168.1.100"})
+	filter, err := caddywarden.NewIPFilter([]string{"", "  ", "\t", "192.168.1.100"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error creating filter with whitespace entries: %v", err)
 	}
@@ -116,7 +121,7 @@ func TestIPFilter_WhitespaceAndEmptyEntries(t *testing.T) {
 }
 
 func TestIPFilter_UnparseableRemoteAddr(t *testing.T) {
-	filter, err := caddywarden.NewIPFilter([]string{"10.0.0.1"})
+	filter, err := caddywarden.NewIPFilter([]string{"10.0.0.1"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -137,7 +142,7 @@ func TestIPFilter_UnparseableRemoteAddr(t *testing.T) {
 }
 
 func TestIPFilter_MultiIPForwardedFor(t *testing.T) {
-	filter, err := caddywarden.NewIPFilter([]string{"10.0.0.1"})
+	filter, err := caddywarden.NewIPFilter([]string{"10.0.0.1"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -160,7 +165,7 @@ func TestIPFilter_MultiIPForwardedFor(t *testing.T) {
 }
 
 func TestIPFilter_PortAndBracketStripping(t *testing.T) {
-	filter, err := caddywarden.NewIPFilter([]string{"192.168.1.50", "2001:db8::99"})
+	filter, err := caddywarden.NewIPFilter([]string{"192.168.1.50", "2001:db8::99"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -187,3 +192,35 @@ func TestIPFilter_PortAndBracketStripping(t *testing.T) {
 	}
 }
 
+func TestIPFilter_TrustedProxies(t *testing.T) {
+	// Whitelisted IP: 10.0.0.50
+	// Trusted proxy: 192.168.1.1 (and subnet 10.100.0.0/16)
+	filter, err := caddywarden.NewIPFilter([]string{"10.0.0.50"}, []string{"192.168.1.1", "10.100.0.0/16"})
+	if err != nil {
+		t.Fatalf("unexpected error creating filter with trusted proxies: %v", err)
+	}
+
+	// Case 1: Untrusted client directly connecting (203.0.113.99) sends spoofed XFF
+	reqSpoofed := httptest.NewRequest(http.MethodGet, "/", nil)
+	reqSpoofed.RemoteAddr = "203.0.113.99:12345"
+	reqSpoofed.Header.Set("X-Forwarded-For", "10.0.0.50")
+	if filter.IsAllowed(reqSpoofed) {
+		t.Errorf("spoofed XFF from untrusted remote address MUST NOT be allowed")
+	}
+
+	// Case 2: Trusted proxy (192.168.1.1) forwards legitimate client (10.0.0.50)
+	reqTrusted := httptest.NewRequest(http.MethodGet, "/", nil)
+	reqTrusted.RemoteAddr = "192.168.1.1:54321"
+	reqTrusted.Header.Set("X-Forwarded-For", "10.0.0.50, 192.168.1.1")
+	if !filter.IsAllowed(reqTrusted) {
+		t.Errorf("forwarded header from trusted proxy MUST be honoured and allowed")
+	}
+
+	// Case 3: Trusted subnet (10.100.0.5) forwards non-whitelisted client (198.51.100.1)
+	reqTrustedNotAllowed := httptest.NewRequest(http.MethodGet, "/", nil)
+	reqTrustedNotAllowed.RemoteAddr = "10.100.0.5:54321"
+	reqTrustedNotAllowed.Header.Set("X-Forwarded-For", "198.51.100.1")
+	if filter.IsAllowed(reqTrustedNotAllowed) {
+		t.Errorf("forwarded non-whitelisted IP from trusted proxy should NOT be allowed")
+	}
+}
