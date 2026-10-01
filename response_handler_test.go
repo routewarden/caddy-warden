@@ -142,9 +142,11 @@ func TestResponseHandler_SilentDrop(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeBlockedRequest(rr, req)
-
-	if rr.Code != http.StatusForbidden {
-		t.Errorf("expected %d, got %d", http.StatusForbidden, rr.Code)
+	// Bug fix: when TCP hijacking is unavailable (httptest.ResponseRecorder does not
+	// implement http.Hijacker), silentDrop falls back to 200 OK with an empty body
+	// instead of leaking the real block status code to the client.
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected %d, got %d", http.StatusOK, rr.Code)
 	}
 	if rr.Body.Len() > 0 {
 		t.Errorf("expected empty body for silent drop")

@@ -1174,8 +1174,10 @@ func TestRouteWarden_LiveSamplesParitySuite(t *testing.T) {
 		}
 		recDrop := httptest.NewRecorder()
 		_ = rwDrop.ServeHTTP(recDrop, httptest.NewRequest(http.MethodGet, "/.env", nil), &testHandler{})
-		if recDrop.Code != 403 {
-			t.Errorf("expected 403 status fallback for SilentDrop in test recorder, got %d", recDrop.Code)
+		// Bug fix: when hijacking is unavailable (recorder doesn't implement Hijacker),
+		// silentDrop falls back to 200 OK with empty body instead of leaking block status.
+		if recDrop.Code != http.StatusOK {
+			t.Errorf("expected 200 status fallback for SilentDrop in test recorder, got %d", recDrop.Code)
 		}
 
 		// Port 8090: InfiniteStream mode

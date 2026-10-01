@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -179,6 +180,16 @@ func NewResponseHandler(respCfg *ResponseConfig, topStatusCode int, topCustomTex
 		proxyHandler = httputil.NewSingleHostReverseProxy(targetURL)
 	}
 
+	if strings.ToLower(respCfg.Mode) == "redirect" {
+		target := strings.TrimSpace(respCfg.RedirectURL)
+		if target != "" && !strings.HasPrefix(target, "/") {
+			u, err := url.Parse(target)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+				return nil, fmt.Errorf("invalid redirectUrl %q: must have http or https scheme or be a path starting with /", respCfg.RedirectURL)
+			}
+		}
+	}
+
 	isSilentDrop := silentDrop
 	if respCfg != nil && (strings.EqualFold(respCfg.Mode, "silentdrop") || strings.EqualFold(respCfg.Mode, "silent_drop") || strings.EqualFold(respCfg.Mode, "drop")) {
 		isSilentDrop = true
@@ -220,12 +231,14 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 				return
 			}
 			if h.debug && h.logger != nil {
-				h.logger.Debug("routewarden: hijacker failed, falling back to status code write",
+				h.logger.Debug("routewarden: hijacker failed, falling back to 200 OK empty response",
 					zap.Error(err),
 				)
 			}
 		}
-		w.WriteHeader(h.config.StatusCode)
+		// Fallback when hijacking is unavailable (e.g. HTTP/2, HTTP/3, or wrapper ResponseWriter):
+		// return 200 OK with an empty body rather than leaking the real block status code to the client.
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 
@@ -310,9 +323,15 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 			if err := h.captchaTemplate.Execute(&buf, data); err == nil {
 				_, _ = w.Write(buf.Bytes())
 				return
+			} else {
+				if h.logger != nil {
+					h.logger.Error("routewarden: failed to execute captcha template", zap.Error(err))
+				} else {
+					fmt.Fprintf(os.Stderr, "routewarden: failed to execute captcha template: %v\n", err)
+				}
 			}
 		}
-		_, _ = fmt.Fprintln(w, "Security Challenge Required")
+		_, _ = fmt.Fprintln(w, "<!DOCTYPE html><html><head><title>Security Challenge</title></head><body><h1>Security Challenge Required</h1><p>Please complete the security challenge to proceed.</p></body></html>")
 
 	case "gzipbomb", "bomb":
 		contentType := h.config.ContentType

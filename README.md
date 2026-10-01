@@ -8,13 +8,13 @@
   <a href="https://github.com/routewarden/caddy-warden/actions/workflows/ci.yml"><img src="https://github.com/routewarden/caddy-warden/actions/workflows/ci.yml/badge.svg" alt="CI Status" /></a>
   <a href="https://github.com/routewarden/caddy-warden"><img src="https://img.shields.io/badge/Coverage-98.8%25-brightgreen.svg" alt="Coverage" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
-  <a href="https://routewarden.github.io/docs/"><img src="https://img.shields.io/badge/Docs-Wiki-6366f1.svg" alt="Documentation Site" /></a>
+  <a href="https://routewarden.github.io/"><img src="https://img.shields.io/badge/Docs-Wiki-6366f1.svg" alt="Documentation Site" /></a>
 </p>
 
 ---
 
-- **Live Playground**: [Try RouteWarden in your browser](https://routewarden.github.io/docs/?playground=open)
-- **Documentation & Guides**: [https://routewarden.github.io/docs/](https://routewarden.github.io/docs/)
+- **Live Playground**: [Try RouteWarden in your browser](https://routewarden.github.io/?playground=open)
+- **Documentation & Guides**: [https://routewarden.github.io/](https://routewarden.github.io/)
 - **Example Configurations**: [`examples/`](examples/)
 
 ---
@@ -54,7 +54,7 @@ Then build Caddy with RouteWarden:
 ```bash
 # Pin to a specific version (recommended for production)
 xcaddy build \
-    --with github.com/routewarden/caddy-warden@v1.2.1
+    --with github.com/routewarden/caddy-warden@v1.3.0
 
 # Or build using the latest version
 xcaddy build \
@@ -79,7 +79,7 @@ Use Caddy's official multi-stage builder to create your image:
 FROM caddy:2.9-builder AS builder
 
 RUN xcaddy build \
-    --with github.com/routewarden/caddy-warden@v1.2.1
+    --with github.com/routewarden/caddy-warden@v1.3.0
 
 FROM caddy:2.9-alpine
 
@@ -125,7 +125,7 @@ volumes:
 If you build your own Caddy binary in Go, import RouteWarden for automatic registration:
 
 ```bash
-go get github.com/routewarden/caddy-warden@v1.2.1
+go get github.com/routewarden/caddy-warden@v1.3.0
 ```
 
 ```go
@@ -256,7 +256,7 @@ You can use the official [`rwarden`](https://routewarden.github.io/cli/) CLI too
 
 ```bash
 # Install RouteWarden CLI
-curl -fsSL https://routewarden.github.io/cli/install.sh | bash
+curl -fsSL https://routewarden.github.io/install.sh | bash
 
 # Or run via Docker
 docker run --rm ghcr.io/routewarden/cli:latest version
@@ -280,10 +280,10 @@ For complete documentation on the CLI, installation methods, and options, visit 
 
 For complete guides, configuration references, and integration recipes, visit the official documentation:
 
-- [**RouteWarden Documentation**](https://routewarden.github.io/docs)
-- [**CrowdSec Integration & Auto-Ban Guide**](https://routewarden.github.io/docs/examples/crowdsec): Detect and ban aggressive scanners automatically using CrowdSec.
-- [**Response Modes & Defense Actions**](https://routewarden.github.io/docs/reference/response-modes)
-- [**Anti-Evasion Engine**](https://routewarden.github.io/docs/reference/anti-evasion)
+- [**RouteWarden Documentation**](https://routewarden.github.io)
+- [**CrowdSec Integration & Auto-Ban Guide**](https://routewarden.github.io/examples/crowdsec): Detect and ban aggressive scanners automatically using CrowdSec.
+- [**Response Modes & Defense Actions**](https://routewarden.github.io/reference/response-modes)
+- [**Anti-Evasion Engine**](https://routewarden.github.io/reference/anti-evasion)
 
 ---
 

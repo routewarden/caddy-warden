@@ -11,10 +11,18 @@ import (
 type IPFilter struct {
 	allowedIPs  []net.IP
 	allowedNets []*net.IPNet
+	// trustedNets is the set of upstream proxies (e.g. load-balancers, CDNs) whose
+	// X-Forwarded-For / X-Real-IP headers are trusted. When nil/empty, XFF is trusted
+	// unconditionally (legacy behaviour). When non-empty, XFF is only honoured if the
+	// request's RemoteAddr is a member of this set; otherwise RemoteAddr is used directly,
+	// preventing IP-whitelist bypass via forged X-Forwarded-For headers.
+	trustedNets []*net.IPNet
 }
 
 // NewIPFilter parses and creates an IPFilter from a list of IP strings and CIDR notation subnets.
-func NewIPFilter(allowedIPs []string) (*IPFilter, error) {
+// trustedProxies is an optional list of IPs/CIDRs whose X-Forwarded-For / X-Real-IP headers
+// are considered trustworthy. Pass nil or an empty slice to retain legacy (always-trust-XFF) behaviour.
+func NewIPFilter(allowedIPs []string, trustedProxies []string) (*IPFilter, error) {
 	var ips []net.IP
 	var nets []*net.IPNet
 
@@ -38,9 +46,36 @@ func NewIPFilter(allowedIPs []string) (*IPFilter, error) {
 		}
 	}
 
+	var trustedNets []*net.IPNet
+	for _, proxyStr := range trustedProxies {
+		proxyStr = strings.TrimSpace(proxyStr)
+		if proxyStr == "" {
+			continue
+		}
+		if strings.Contains(proxyStr, "/") {
+			_, ipNet, err := net.ParseCIDR(proxyStr)
+			if err != nil {
+				return nil, fmt.Errorf("invalid trusted proxy CIDR %q: %w", proxyStr, err)
+			}
+			trustedNets = append(trustedNets, ipNet)
+		} else {
+			ip := net.ParseIP(proxyStr)
+			if ip == nil {
+				return nil, fmt.Errorf("invalid trusted proxy IP %q", proxyStr)
+			}
+			bits := 128
+			if ip.To4() != nil {
+				bits = 32
+			}
+			mask := net.CIDRMask(bits, bits)
+			trustedNets = append(trustedNets, &net.IPNet{IP: ip.Mask(mask), Mask: mask})
+		}
+	}
+
 	return &IPFilter{
 		allowedIPs:  ips,
 		allowedNets: nets,
+		trustedNets: trustedNets,
 	}, nil
 }
 
@@ -50,7 +85,7 @@ func (f *IPFilter) IsAllowed(req *http.Request) bool {
 		return false
 	}
 
-	clientIPStr := ExtractClientIP(req)
+	clientIPStr := f.ExtractClientIP(req)
 	if clientIPStr == "" {
 		return false
 	}
@@ -75,16 +110,63 @@ func (f *IPFilter) IsAllowed(req *http.Request) bool {
 	return false
 }
 
+// ExtractClientIP resolves the real client IP respecting the trustedNets configuration.
+func (f *IPFilter) ExtractClientIP(req *http.Request) string {
+	// Legacy mode: no trusted proxies declared → trust XFF unconditionally.
+	if len(f.trustedNets) == 0 {
+		return ExtractClientIP(req)
+	}
+
+	// Determine the direct peer address (socket-level).
+	host, _, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil {
+		host = strings.Trim(strings.TrimSpace(req.RemoteAddr), "[]")
+	}
+	remoteIP := net.ParseIP(host)
+
+	// Check whether the direct peer is a declared trusted proxy.
+	isTrusted := false
+	if remoteIP != nil {
+		for _, tn := range f.trustedNets {
+			if tn.Contains(remoteIP) {
+				isTrusted = true
+				break
+			}
+		}
+	}
+
+	if isTrusted {
+		// The request arrived from a trusted proxy: honour forwarding headers.
+		if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			ip := strings.TrimSpace(parts[0])
+			if ip != "" {
+				return cleanIP(ip)
+			}
+		}
+		if xrip := req.Header.Get("X-Real-IP"); xrip != "" {
+			ip := strings.TrimSpace(xrip)
+			if ip != "" {
+				return cleanIP(ip)
+			}
+		}
+	}
+
+	// Not a trusted proxy (or no usable forwarding header): use the socket address directly.
+	if host != "" {
+		return strings.Trim(host, "[]")
+	}
+	return strings.Trim(strings.TrimSpace(req.RemoteAddr), "[]")
+}
+
 // ExtractClientIP extracts the client IP address from proxy headers or RemoteAddr socket.
 func ExtractClientIP(req *http.Request) string {
 	// Check X-Forwarded-For header first (first IP is the originating client)
 	if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
-		if len(parts) > 0 {
-			ip := strings.TrimSpace(parts[0])
-			if ip != "" {
-				return cleanIP(ip)
-			}
+		ip := strings.TrimSpace(parts[0])
+		if ip != "" {
+			return cleanIP(ip)
 		}
 	}
 

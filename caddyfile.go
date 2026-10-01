@@ -85,12 +85,19 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 				rw.AllowedIPs = append(rw.AllowedIPs, args...)
 
+			case "trusted_proxies", "trusted_proxy":
+				args := d.RemainingArgs()
+				if len(args) == 0 {
+					return d.ArgErr()
+				}
+				rw.TrustedProxies = append(rw.TrustedProxies, args...)
+
 			case "mode":
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
 				val := d.Val()
-				if strings.EqualFold(val, "silent_drop") {
+				if strings.EqualFold(val, "silent_drop") || strings.EqualFold(val, "silentdrop") || strings.EqualFold(val, "drop") {
 					val = "silentDrop"
 				}
 				rw.Response.Mode = val
@@ -120,7 +127,7 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 							return d.ArgErr()
 						}
 						val := d.Val()
-						if strings.EqualFold(val, "silent_drop") {
+						if strings.EqualFold(val, "silent_drop") || strings.EqualFold(val, "silentdrop") || strings.EqualFold(val, "drop") {
 							val = "silentDrop"
 						}
 						rw.Response.Mode = val
