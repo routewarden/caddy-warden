@@ -866,3 +866,23 @@ func TestResponseHandler_InfiniteStreamZeroDefaults(t *testing.T) {
 		t.Errorf("expected substantial body from infiniteStream, got %d bytes", rr.Body.Len())
 	}
 }
+
+func TestResponseHandler_Redirect_UnsafeSchemes(t *testing.T) {
+	unsafeURLs := []string{
+		"//attacker.com/evil",
+		"//evil.com",
+		"javascript:alert(1)",
+		"data:text/html,<script>alert(1)</script>",
+		"ftp://attacker.com",
+	}
+
+	for _, u := range unsafeURLs {
+		_, err := caddywarden.NewResponseHandler(&caddywarden.ResponseConfig{
+			Mode:        "redirect",
+			RedirectURL: u,
+		}, 0, "", false)
+		if err == nil {
+			t.Errorf("expected error for unsafe redirectUrl %q, got nil", u)
+		}
+	}
+}

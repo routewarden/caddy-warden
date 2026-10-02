@@ -53,15 +53,24 @@ fi
 
 echo "🔄 Synchronizing RouteWarden version: ${TARGET_VERSION} (from version.json)"
 
+# Cross-platform in-place sed helper (works on both GNU and macOS/BSD sed)
+sedi() {
+  if sed --version 2>&1 | grep -q GNU; then
+    sed -i -E "$@"
+  else
+    sed -i '' -E "$@"
+  fi
+}
+
 # Update README.md xcaddy directives if versioned
 if [ -f "${ROOT_DIR}/README.md" ]; then
-  sed -i '' -E "s|(github\.com/routewarden/caddy-warden)@v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?|\1@${TARGET_VERSION}|g" "${ROOT_DIR}/README.md"
+  sedi "s|(github\.com/routewarden/caddy-warden)@v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?|\1@${TARGET_VERSION}|g" "${ROOT_DIR}/README.md"
   echo "  ✓ Synchronized README.md"
 fi
 
 # Update VERSIONING.md code snippets if present
 if [ -f "${ROOT_DIR}/VERSIONING.md" ]; then
-  sed -i '' -E "s|(\"version\"[[:space:]]*:[[:space:]]*\")v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\")|\1${TARGET_VERSION}\3|g" "${ROOT_DIR}/VERSIONING.md"
+  sedi "s|(\"version\"[[:space:]]*:[[:space:]]*\")v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\")|\1${TARGET_VERSION}\3|g" "${ROOT_DIR}/VERSIONING.md"
   echo "  ✓ Synchronized VERSIONING.md"
 fi
 
