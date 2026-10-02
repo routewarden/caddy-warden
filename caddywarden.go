@@ -388,14 +388,26 @@ func (rw *RouteWarden) logSecurityEvent(r *http.Request, matchedTarget string, p
 		return
 	}
 	mode := "text"
+	statusCode := http.StatusForbidden
 	if rw.responseHandler != nil {
 		if rw.responseHandler.silentDrop {
 			mode = "silentDrop"
-		} else if rw.responseHandler.config != nil && rw.responseHandler.config.Mode != "" {
-			mode = rw.responseHandler.config.Mode
+			statusCode = 0
+		} else if rw.responseHandler.config != nil {
+			if rw.responseHandler.config.Mode != "" {
+				mode = rw.responseHandler.config.Mode
+			}
+			if rw.responseHandler.config.StatusCode != 0 {
+				statusCode = rw.responseHandler.config.StatusCode
+			}
 		}
-	} else if rw.Response != nil && rw.Response.Mode != "" {
-		mode = rw.Response.Mode
+	} else if rw.Response != nil {
+		if rw.Response.Mode != "" {
+			mode = rw.Response.Mode
+		}
+		if rw.Response.StatusCode != 0 {
+			statusCode = rw.Response.StatusCode
+		}
 	}
 	clientIP := rw.extractClientIP(r)
 
@@ -403,11 +415,14 @@ func (rw *RouteWarden) logSecurityEvent(r *http.Request, matchedTarget string, p
 	if rw.logger != nil {
 		rw.logger.Warn("routewarden_block",
 			zap.String("type", "routewarden_block"),
+			zap.String("level", "warn"),
+			zap.Int("status_code", statusCode),
 			zap.String("client_ip", clientIP),
 			zap.String("method", r.Method),
 			zap.String("path", matchedTarget),
 			zap.String("request_uri", r.RequestURI),
 			zap.String("pattern", pattern),
+			zap.String("matched_pattern", pattern),
 			zap.String("action", mode),
 			zap.String("reason", reason),
 			zap.String("user_agent", r.UserAgent()),
@@ -416,17 +431,20 @@ func (rw *RouteWarden) logSecurityEvent(r *http.Request, matchedTarget string, p
 
 	// Also emit raw JSON to stdout so standard CrowdSec parsers pick it up identically:
 	event := map[string]interface{}{
-		"type":        "routewarden_block",
-		"timestamp":   time.Now().UTC().Format(time.RFC3339),
-		"plugin":      "caddy-warden",
-		"client_ip":   clientIP,
-		"method":      r.Method,
-		"path":        matchedTarget,
-		"request_uri": r.RequestURI,
-		"pattern":     pattern,
-		"action":      mode,
-		"reason":      reason,
-		"user_agent":  r.UserAgent(),
+		"type":            "routewarden_block",
+		"timestamp":       time.Now().UTC().Format(time.RFC3339),
+		"level":           "warn",
+		"plugin":          "caddy-warden",
+		"client_ip":       clientIP,
+		"method":          r.Method,
+		"path":            matchedTarget,
+		"request_uri":     r.RequestURI,
+		"pattern":         pattern,
+		"matched_pattern": pattern,
+		"action":          mode,
+		"status_code":     statusCode,
+		"reason":          reason,
+		"user_agent":      r.UserAgent(),
 	}
 	if data, err := json.Marshal(event); err == nil {
 		fmt.Fprintf(os.Stdout, "%s\n", string(data))

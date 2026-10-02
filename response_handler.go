@@ -182,10 +182,15 @@ func NewResponseHandler(respCfg *ResponseConfig, topStatusCode int, topCustomTex
 
 	if strings.ToLower(respCfg.Mode) == "redirect" {
 		target := strings.TrimSpace(respCfg.RedirectURL)
-		if target != "" && !strings.HasPrefix(target, "/") {
-			u, err := url.Parse(target)
-			if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-				return nil, fmt.Errorf("invalid redirectUrl %q: must have http or https scheme or be a path starting with /", respCfg.RedirectURL)
+		if target != "" {
+			if strings.HasPrefix(target, "//") {
+				return nil, fmt.Errorf("unsafe redirectUrl %q: protocol-relative URLs (starting with //) are not allowed", respCfg.RedirectURL)
+			}
+			if !strings.HasPrefix(target, "/") {
+				u, err := url.Parse(target)
+				if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+					return nil, fmt.Errorf("invalid redirectUrl %q: must have http or https scheme or be a path starting with /", respCfg.RedirectURL)
+				}
 			}
 		}
 	}
