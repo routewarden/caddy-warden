@@ -565,6 +565,28 @@ func TestCaddyfile_MethodsDirective(t *testing.T) {
 			t.Errorf("expected 1 AllowedIP from allowed_ip, got %v", rw.AllowedIPs)
 		}
 	})
+
+	t.Run("check_body and body_patterns directives", func(t *testing.T) {
+		snippet := `routewarden {
+			check_body
+			check_body_max_bytes 32768
+			body_patterns "(?i)grant_type=password" "malicious_payload"
+		}`
+		d := caddyfile.NewTestDispenser(snippet)
+		rw := &caddywarden.RouteWarden{}
+		if err := rw.UnmarshalCaddyfile(d); err != nil {
+			t.Fatalf("unexpected unmarshal error: %v", err)
+		}
+		if !rw.CheckBody {
+			t.Errorf("expected CheckBody to be true")
+		}
+		if rw.CheckBodyMaxBytes != 32768 {
+			t.Errorf("expected CheckBodyMaxBytes to be 32768, got %d", rw.CheckBodyMaxBytes)
+		}
+		if len(rw.CheckBodyPatterns) != 2 || rw.CheckBodyPatterns[0] != "(?i)grant_type=password" {
+			t.Errorf("expected 2 CheckBodyPatterns, got %v", rw.CheckBodyPatterns)
+		}
+	})
 }
 
 

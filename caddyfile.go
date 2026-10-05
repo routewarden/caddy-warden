@@ -46,6 +46,26 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			case "check_query":
 				rw.CheckQuery = true
 
+			case "check_body":
+				rw.CheckBody = true
+
+			case "check_body_max_bytes", "body_max_bytes":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				bytesVal, err := strconv.ParseInt(d.Val(), 10, 64)
+				if err != nil {
+					return d.Errf("invalid check_body_max_bytes: %v", err)
+				}
+				rw.CheckBodyMaxBytes = bytesVal
+
+			case "check_body_patterns", "check_body_pattern", "body_patterns", "body_pattern":
+				args := d.RemainingArgs()
+				if len(args) == 0 {
+					return d.ArgErr()
+				}
+				rw.CheckBodyPatterns = append(rw.CheckBodyPatterns, args...)
+
 			case "check_headers":
 				args := d.RemainingArgs()
 				if len(args) == 0 {

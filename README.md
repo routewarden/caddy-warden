@@ -211,6 +211,15 @@ routewarden {
     # Check query strings for sensitive filenames
     check_query
 
+    # Check request body (e.g. POST form payloads, OAuth grants, JSON params)
+    check_body
+
+    # Maximum request body size to read for inspection (default: 65536 bytes)
+    check_body_max_bytes 65536
+
+    # Specific regex patterns to match against the request body
+    body_patterns <regex...>
+
     # Enable verbose debug logs (evaluations, candidate paths, IP matching)
     debug
 

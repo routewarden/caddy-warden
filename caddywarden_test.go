@@ -2,12 +2,14 @@ package caddywarden_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	caddywarden "github.com/routewarden/caddy-warden"
 )
 
@@ -1332,5 +1334,69 @@ func TestRouteWarden_LiveSamplesParitySuite(t *testing.T) {
 			t.Errorf("expected 403 for smuggled .env in header, got %d", recSmuggled.Code)
 		}
 	})
+
+	t.Run("CheckBody and CheckBodyPatterns inspection for Vaultwarden Send security", func(t *testing.T) {
+		rw := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: false,
+			Methods:               []string{"POST"},
+			CheckBody:             true,
+			CheckBodyPatterns:     []string{"(?i)grant_type=password"},
+		}
+		if err := rw.Provision(ctx); err != nil {
+			t.Fatalf("unexpected provision error: %v", err)
+		}
+
+		// 1. Vault user login with grant_type=password is BLOCKED
+		bodyLogin := strings.NewReader("grant_type=password&username=admin%40example.com&password=secretpassword")
+		nextLogin := &testHandler{}
+		reqLogin := httptest.NewRequest(http.MethodPost, "/identity/connect/token", bodyLogin)
+		reqLogin.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		recLogin := httptest.NewRecorder()
+		if err := rw.ServeHTTP(recLogin, reqLogin, nextLogin); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nextLogin.handled || recLogin.Code != http.StatusForbidden {
+			t.Errorf("expected 403 for grant_type=password login attempt, got %d (handled=%v)", recLogin.Code, nextLogin.handled)
+		}
+
+		// 2. Bitwarden Send password access with grant_type=send_access_token is ALLOWED
+		bodySend := strings.NewReader("grant_type=send_access_token&send_id=3a17e08f-bf2a-4310&password=sendpassword")
+		nextSend := &testHandler{}
+		reqSend := httptest.NewRequest(http.MethodPost, "/identity/connect/token", bodySend)
+		reqSend.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		recSend := httptest.NewRecorder()
+		if err := rw.ServeHTTP(recSend, reqSend, nextSend); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !nextSend.handled || recSend.Code != http.StatusOK {
+			t.Errorf("expected 200 pass for grant_type=send_access_token, got %d", recSend.Code)
+		}
+
+		// 3. Verify downstream handler can still read req.Body
+		var downstreamReadBytes []byte
+		downstreamHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("downstream read error: %v", err)
+			}
+			downstreamReadBytes = b
+			w.WriteHeader(http.StatusOK)
+		})
+		bodyPayload := "grant_type=send_access_token&sample=123"
+		reqDownstream := httptest.NewRequest(http.MethodPost, "/identity/connect/token", strings.NewReader(bodyPayload))
+		recDownstream := httptest.NewRecorder()
+		caddyHandler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+			downstreamHandler.ServeHTTP(w, r)
+			return nil
+		})
+		if err := rw.ServeHTTP(recDownstream, reqDownstream, caddyHandler); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(downstreamReadBytes) != bodyPayload {
+			t.Errorf("downstream received %q, expected %q", string(downstreamReadBytes), bodyPayload)
+		}
+	})
 }
+
 
