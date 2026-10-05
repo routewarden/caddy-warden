@@ -22,6 +22,7 @@ import (
 func init() {
 	caddy.RegisterModule(RouteWarden{})
 	httpcaddyfile.RegisterHandlerDirective("routewarden", parseCaddyfile)
+	httpcaddyfile.RegisterHandlerDirective("route_warden", parseCaddyfile)
 }
 
 // RouteWarden is a Caddy v2 HTTP middleware module that blocks reconnaissance
