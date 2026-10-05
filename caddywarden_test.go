@@ -77,7 +77,7 @@ func TestRouteWarden_ProvisionErrors(t *testing.T) {
 
 	// Invalid block pattern regex
 	rwInvalidBlock := &caddywarden.RouteWarden{
-		PathPatterns: []string{"[unclosed"},
+		BlockPatterns: []string{"[unclosed"},
 	}
 	if err := rwInvalidBlock.Provision(ctx); err == nil {
 		t.Error("expected error for invalid block regex, got nil")
@@ -632,7 +632,7 @@ func TestRouteWarden_EmptyPatternStrings(t *testing.T) {
 	rw := &caddywarden.RouteWarden{
 		Enabled:               true,
 		EnableDefaultPatterns: false,
-		PathPatterns:          []string{"", "   ", `(?i)^/secret$`, ""},
+		BlockPatterns:          []string{"", "   ", `(?i)^/secret$`, ""},
 		AllowPatterns:         []string{"", "  ", `(?i)^/secret/allowed$`, ""},
 	}
 	if err := rw.Provision(ctx); err != nil {
@@ -939,7 +939,7 @@ func TestRouteWarden_LiveSamplesParitySuite(t *testing.T) {
 			Enabled:                    true,
 			EnableDefaultPatterns:      true,
 			EnableDefaultAllowPatterns: true,
-			PathPatterns:               []string{`(?i)^/admin/secret.*$`},
+			BlockPatterns:               []string{`(?i)^/admin/secret.*$`},
 			AllowPatterns:              []string{`(?i)^/api/healthz$`},
 			AllowedIPs:                 []string{"192.168.100.50", "10.99.0.0/16"},
 			Methods:                    []string{"GET"},

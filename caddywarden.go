@@ -30,7 +30,6 @@ type RouteWarden struct {
 	Enabled                    bool            `json:"enabled"`
 	EnableDefaultPatterns      bool            `json:"enable_default_patterns"`
 	EnableDefaultAllowPatterns bool            `json:"enable_default_allow_patterns"`
-	PathPatterns               []string        `json:"path_patterns,omitempty"`
 	BlockPatterns              []string        `json:"block_patterns,omitempty"`
 	AllowPatterns              []string        `json:"allow_patterns,omitempty"`
 	AllowedIPs                 []string        `json:"allowed_ips,omitempty"`
@@ -111,7 +110,6 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 	if rw.EnableDefaultPatterns {
 		allBlockPatterns = append(allBlockPatterns, DefaultBlockPatterns...)
 	}
-	allBlockPatterns = append(allBlockPatterns, rw.PathPatterns...)
 	allBlockPatterns = append(allBlockPatterns, rw.BlockPatterns...)
 
 	rw.compiledBlock = make([]*regexp.Regexp, 0, len(allBlockPatterns))

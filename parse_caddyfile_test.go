@@ -9,7 +9,7 @@ import (
 
 func TestParseCaddyfile(t *testing.T) {
 	input := `routewarden {
-		disable
+		enabled false
 	}`
 	d := caddyfile.NewTestDispenser(input)
 	helper := httpcaddyfile.Helper{

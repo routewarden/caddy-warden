@@ -3,6 +3,7 @@ package caddywarden_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -29,11 +30,11 @@ func TestCaddyfile_ParsingAndMiddleware(t *testing.T) {
 	caddyfileInput := `
 	routewarden {
 		allowed_ips 10.0.0.1
-		path_patterns (?i)^/admin/secret$
+		block_patterns (?i)^/admin/secret$
 		check_query
 		response {
 			mode json
-			status 403
+			status_code 403
 			body "{\"error\":\"Access Blocked\"}"
 		}
 	}
@@ -137,20 +138,19 @@ func TestCaddyfile_ParsingAndMiddleware(t *testing.T) {
 func TestCaddyfile_ComprehensiveDirectives(t *testing.T) {
 	caddyfileInput := `
 	routewarden {
-		disable
-		disable_default_patterns
-		disable_default_allow_patterns
+		enabled false
+		enable_default_patterns false
+		enable_default_allow_patterns false
 		check_query
 		debug
 		security_log true
-		path_patterns (?i)^/block1$ (?i)^/block2$
-		block_patterns (?i)^/block3$
+		block_patterns (?i)^/block1$ (?i)^/block2$ (?i)^/block3$
 		allow_patterns (?i)^/allow1$ (?i)^/allow2$
 		allowed_ips 192.168.1.1 10.0.0.0/24
 		methods GET POST
 		response {
 			mode captcha
-			status 429
+			status_code 429
 			content_type application/custom+json
 			body "Custom Body Content"
 			redirect_url https://honeypot.internal/sink
@@ -192,8 +192,8 @@ func TestCaddyfile_ComprehensiveDirectives(t *testing.T) {
 	if !rw.SecurityLog {
 		t.Errorf("expected rw.SecurityLog to be true")
 	}
-	if len(rw.PathPatterns) != 3 {
-		t.Errorf("expected 3 path_patterns, got %d", len(rw.PathPatterns))
+	if len(rw.BlockPatterns) != 3 {
+		t.Errorf("expected 3 block_patterns, got %d", len(rw.BlockPatterns))
 	}
 	if len(rw.AllowPatterns) != 2 {
 		t.Errorf("expected 2 allow_patterns, got %d", len(rw.AllowPatterns))
@@ -284,14 +284,14 @@ func TestCaddyfile_ParsingErrors(t *testing.T) {
 		name string
 		cfg  string
 	}{
-		{"empty path_patterns", "routewarden {\n path_patterns\n}"},
+		{"empty block_patterns", "routewarden {\n block_patterns\n}"},
 		{"empty allow_patterns", "routewarden {\n allow_patterns\n}"},
 		{"empty allowed_ips", "routewarden {\n allowed_ips\n}"},
 		{"empty methods", "routewarden {\n methods\n}"},
 		{"unknown routewarden directive", "routewarden {\n unknown_directive\n}"},
 		{"empty response mode", "routewarden {\n response {\n mode\n }\n}"},
-		{"empty response status", "routewarden {\n response {\n status\n }\n}"},
-		{"invalid response status non-int", "routewarden {\n response {\n status abc\n }\n}"},
+		{"empty response status_code", "routewarden {\n response {\n status_code\n }\n}"},
+		{"invalid response status_code non-int", "routewarden {\n response {\n status_code abc\n }\n}"},
 		{"empty content_type", "routewarden {\n response {\n content_type\n }\n}"},
 		{"empty body", "routewarden {\n response {\n body\n }\n}"},
 		{"empty redirect_url", "routewarden {\n response {\n redirect_url\n }\n}"},
@@ -329,7 +329,7 @@ func TestCaddyfile_MethodsDirective(t *testing.T) {
 	t.Run("Default methods when omitted", func(t *testing.T) {
 		input := `
 		routewarden {
-			path_patterns (?i)^/secret$
+			block_patterns (?i)^/secret$
 		}
 		`
 		d := caddyfile.NewTestDispenser(input)
@@ -426,8 +426,8 @@ func TestCaddyfile_MethodsDirective(t *testing.T) {
 		}
 	})
 
-	t.Run("Disable flag survives Caddy JSON roundtrip", func(t *testing.T) {
-		cfg := "routewarden {\n disable\n}"
+	t.Run("Disabled flag survives Caddy JSON roundtrip", func(t *testing.T) {
+		cfg := "routewarden {\n enabled false\n}"
 		d := caddyfile.NewTestDispenser(cfg)
 		rw := &caddywarden.RouteWarden{}
 		if err := rw.UnmarshalCaddyfile(d); err != nil {
@@ -543,34 +543,31 @@ func TestCaddyfile_MethodsDirective(t *testing.T) {
 		}
 	})
 
-	t.Run("singular directive aliases", func(t *testing.T) {
-		snippet := `routewarden {
-			path_pattern (?i)^/singular-path$
-			block_pattern (?i)^/singular-block$
-			allow_pattern (?i)^/singular-allow$
-			allowed_ip 192.168.1.1
-		}`
-		d := caddyfile.NewTestDispenser(snippet)
-		rw := &caddywarden.RouteWarden{}
-		if err := rw.UnmarshalCaddyfile(d); err != nil {
-			t.Fatalf("unexpected unmarshal error: %v", err)
+	t.Run("removed duplicate aliases error", func(t *testing.T) {
+		aliases := []string{
+			"path_pattern (?i)^/p$",
+			"block_pattern (?i)^/p$",
+			"allow_pattern (?i)^/p$",
+			"allowed_ip 192.168.1.1",
+			"path_patterns (?i)^/p$",
+			"body_patterns (?i)secret",
+			"body_pattern (?i)secret",
 		}
-		if len(rw.PathPatterns) != 2 {
-			t.Errorf("expected 2 PathPatterns from path_pattern and block_pattern, got %d", len(rw.PathPatterns))
-		}
-		if len(rw.AllowPatterns) != 1 || rw.AllowPatterns[0] != "(?i)^/singular-allow$" {
-			t.Errorf("expected 1 AllowPattern from allow_pattern, got %v", rw.AllowPatterns)
-		}
-		if len(rw.AllowedIPs) != 1 || rw.AllowedIPs[0] != "192.168.1.1" {
-			t.Errorf("expected 1 AllowedIP from allowed_ip, got %v", rw.AllowedIPs)
+		for _, alias := range aliases {
+			snippet := fmt.Sprintf("routewarden {\n%s\n}", alias)
+			d := caddyfile.NewTestDispenser(snippet)
+			rw := &caddywarden.RouteWarden{}
+			if err := rw.UnmarshalCaddyfile(d); err == nil {
+				t.Errorf("expected error for removed duplicate alias %q, got nil", alias)
+			}
 		}
 	})
 
-	t.Run("check_body and body_patterns directives", func(t *testing.T) {
+	t.Run("check_body and check_body_patterns directives", func(t *testing.T) {
 		snippet := `routewarden {
 			check_body
 			check_body_max_bytes 32768
-			body_patterns "(?i)grant_type=password" "malicious_payload"
+			check_body_patterns "(?i)grant_type=password" "malicious_payload"
 		}`
 		d := caddyfile.NewTestDispenser(snippet)
 		rw := &caddywarden.RouteWarden{}

@@ -199,16 +199,14 @@ example.com {
 
 ```caddyfile
 routewarden {
-    # Enable or disable RouteWarden for this site (or shorthand 'disable')
+    # Enable or disable RouteWarden for this site
     enabled true
 
-    # Default sensitive file patterns (.env, .git, etc.) - enabled by default
+    # Built-in sensitive file patterns (.env, .git, etc.) - default: true
     enable_default_patterns true
-    # Or turn off using: enable_default_patterns false (shorthand: disable_default_patterns)
 
-    # Default safe list (robots.txt, sitemap.xml, .well-known) - enabled by default
+    # Built-in safe list exemptions (robots.txt, sitemap.xml, .well-known) - default: true
     enable_default_allow_patterns true
-    # Or turn off using: enable_default_allow_patterns false (shorthand: disable_default_allow_patterns)
 
     # Check query strings for sensitive filenames
     check_query
