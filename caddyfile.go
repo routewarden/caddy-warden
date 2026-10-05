@@ -21,6 +21,15 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 	return rw, err
 }
 
+func parseBoolArg(d *caddyfile.Dispenser, defaultVal bool) bool {
+	args := d.RemainingArgs()
+	if len(args) == 0 {
+		return defaultVal
+	}
+	val := strings.ToLower(args[0])
+	return val == "true" || val == "1" || val == "yes" || val == "on"
+}
+
 func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	rw.Enabled = true
 	rw.EnableDefaultPatterns = true
@@ -37,17 +46,26 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			case "disable":
 				rw.Enabled = false
 
+			case "enable", "enabled":
+				rw.Enabled = parseBoolArg(d, true)
+
+			case "enable_default_patterns":
+				rw.EnableDefaultPatterns = parseBoolArg(d, true)
+
 			case "disable_default_patterns":
 				rw.EnableDefaultPatterns = false
+
+			case "enable_default_allow_patterns":
+				rw.EnableDefaultAllowPatterns = parseBoolArg(d, true)
 
 			case "disable_default_allow_patterns":
 				rw.EnableDefaultAllowPatterns = false
 
 			case "check_query":
-				rw.CheckQuery = true
+				rw.CheckQuery = parseBoolArg(d, true)
 
 			case "check_body":
-				rw.CheckBody = true
+				rw.CheckBody = parseBoolArg(d, true)
 
 			case "check_body_max_bytes", "body_max_bytes":
 				if !d.NextArg() {

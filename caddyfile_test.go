@@ -587,6 +587,48 @@ func TestCaddyfile_MethodsDirective(t *testing.T) {
 			t.Errorf("expected 2 CheckBodyPatterns, got %v", rw.CheckBodyPatterns)
 		}
 	})
+
+	t.Run("enable_default_patterns and enable_default_allow_patterns directives", func(t *testing.T) {
+		snippetFalse := `routewarden {
+			enable_default_patterns false
+			enable_default_allow_patterns false
+			enabled false
+		}`
+		dFalse := caddyfile.NewTestDispenser(snippetFalse)
+		rwFalse := &caddywarden.RouteWarden{}
+		if err := rwFalse.UnmarshalCaddyfile(dFalse); err != nil {
+			t.Fatalf("unexpected unmarshal error: %v", err)
+		}
+		if rwFalse.EnableDefaultPatterns {
+			t.Errorf("expected EnableDefaultPatterns to be false")
+		}
+		if rwFalse.EnableDefaultAllowPatterns {
+			t.Errorf("expected EnableDefaultAllowPatterns to be false")
+		}
+		if rwFalse.Enabled {
+			t.Errorf("expected Enabled to be false")
+		}
+
+		snippetTrue := `routewarden {
+			enable_default_patterns true
+			enable_default_allow_patterns true
+			enabled true
+		}`
+		dTrue := caddyfile.NewTestDispenser(snippetTrue)
+		rwTrue := &caddywarden.RouteWarden{}
+		if err := rwTrue.UnmarshalCaddyfile(dTrue); err != nil {
+			t.Fatalf("unexpected unmarshal error: %v", err)
+		}
+		if !rwTrue.EnableDefaultPatterns {
+			t.Errorf("expected EnableDefaultPatterns to be true")
+		}
+		if !rwTrue.EnableDefaultAllowPatterns {
+			t.Errorf("expected EnableDefaultAllowPatterns to be true")
+		}
+		if !rwTrue.Enabled {
+			t.Errorf("expected Enabled to be true")
+		}
+	})
 }
 
 
