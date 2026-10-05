@@ -231,3 +231,25 @@ func TestIPFilter_TrustedProxies(t *testing.T) {
 		t.Errorf("forwarded non-whitelisted IP from trusted proxy should NOT be allowed")
 	}
 }
+
+func TestIPFilter_BracketedAndCIDRConfig(t *testing.T) {
+	filter, err := caddywarden.NewIPFilter(
+		[]string{"[2001:db8::1]", "[2001:db8:cafe::]/48", "fe80::1%eth0"},
+		[]string{"[::1]", "[2001:db8:ffff::]/64", "fe80::2%eth0"},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error parsing bracketed and scoped IPs/CIDRs: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "[2001:db8::1]:12345"
+	if !filter.IsAllowed(req) {
+		t.Errorf("expected allowed for bracketed IPv6")
+	}
+
+	reqSubnet := httptest.NewRequest(http.MethodGet, "/", nil)
+	reqSubnet.RemoteAddr = "[2001:db8:cafe::42]:54321"
+	if !filter.IsAllowed(reqSubnet) {
+		t.Errorf("expected allowed for bracketed CIDR subnet")
+	}
+}
