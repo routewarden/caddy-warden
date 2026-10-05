@@ -1360,8 +1360,8 @@ func TestRouteWarden_LiveSamplesParitySuite(t *testing.T) {
 			t.Errorf("expected 403 for grant_type=password login attempt, got %d (handled=%v)", recLogin.Code, nextLogin.handled)
 		}
 
-		// 2. Bitwarden Send password access with grant_type=send_access_token is ALLOWED
-		bodySend := strings.NewReader("grant_type=send_access_token&send_id=3a17e08f-bf2a-4310&password=sendpassword")
+		// 2. Bitwarden Send password access with grant_type=send_access is ALLOWED
+		bodySend := strings.NewReader("grant_type=send_access&send_id=3a17e08f-bf2a-4310&password=sendpassword")
 		nextSend := &testHandler{}
 		reqSend := httptest.NewRequest(http.MethodPost, "/identity/connect/token", bodySend)
 		reqSend.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1370,7 +1370,7 @@ func TestRouteWarden_LiveSamplesParitySuite(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if !nextSend.handled || recSend.Code != http.StatusOK {
-			t.Errorf("expected 200 pass for grant_type=send_access_token, got %d", recSend.Code)
+			t.Errorf("expected 200 pass for grant_type=send_access, got %d", recSend.Code)
 		}
 
 		// 3. Verify downstream handler can still read req.Body
@@ -1383,7 +1383,7 @@ func TestRouteWarden_LiveSamplesParitySuite(t *testing.T) {
 			downstreamReadBytes = b
 			w.WriteHeader(http.StatusOK)
 		})
-		bodyPayload := "grant_type=send_access_token&sample=123"
+		bodyPayload := "grant_type=send_access&sample=123"
 		reqDownstream := httptest.NewRequest(http.MethodPost, "/identity/connect/token", strings.NewReader(bodyPayload))
 		recDownstream := httptest.NewRecorder()
 		caddyHandler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
