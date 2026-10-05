@@ -21,9 +21,34 @@ import (
 
 func init() {
 	caddy.RegisterModule(RouteWarden{})
+	caddy.RegisterModule(RouteWardenSnakeCase{})
 	httpcaddyfile.RegisterHandlerDirective("routewarden", parseCaddyfile)
 	httpcaddyfile.RegisterHandlerDirective("route_warden", parseCaddyfile)
 }
+
+// RouteWardenSnakeCase is a Caddy module alias for the "route_warden" handler ID.
+type RouteWardenSnakeCase struct {
+	RouteWarden
+}
+
+// CaddyModule returns the Caddy module information for route_warden.
+func (RouteWardenSnakeCase) CaddyModule() caddy.ModuleInfo {
+	return caddy.ModuleInfo{
+		ID:  "http.handlers.route_warden",
+		New: func() caddy.Module {
+			return &RouteWardenSnakeCase{
+				RouteWarden: RouteWarden{
+					Enabled:                    true,
+					EnableDefaultPatterns:      true,
+					EnableDefaultAllowPatterns: true,
+					Methods:                    []string{"GET"},
+					Response:                   DefaultResponseConfig(),
+				},
+			}
+		},
+	}
+}
+
 
 // RouteWarden is a Caddy v2 HTTP middleware module that blocks reconnaissance
 // scans, sensitive file exposure, and path-evasion attacks.

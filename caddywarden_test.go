@@ -23,6 +23,16 @@ func TestRouteWarden_ModuleInfo(t *testing.T) {
 	if _, ok := mod.(*caddywarden.RouteWarden); !ok {
 		t.Fatalf("expected *RouteWarden instance from New()")
 	}
+
+	// Verify route_warden alias module registration in Caddy host
+	infoSnake, err := caddy.GetModule("http.handlers.route_warden")
+	if err != nil {
+		t.Fatalf("expected route_warden module to be registered: %v", err)
+	}
+	modSnake := infoSnake.New()
+	if _, ok := modSnake.(*caddywarden.RouteWardenSnakeCase); !ok {
+		t.Fatalf("expected *RouteWardenSnakeCase instance from New()")
+	}
 }
 
 func TestRouteWarden_Validate(t *testing.T) {
