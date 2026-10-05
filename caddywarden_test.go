@@ -1406,7 +1406,31 @@ func TestRouteWarden_LiveSamplesParitySuite(t *testing.T) {
 		if string(downstreamReadBytes) != bodyPayload {
 			t.Errorf("downstream received %q, expected %q", string(downstreamReadBytes), bodyPayload)
 		}
+
+		// 4. Verify closing req.Body invokes underlying closer
+		closed := false
+		customClose := &testCloser{Reader: strings.NewReader(bodyPayload), onClose: func() { closed = true }}
+		reqCloser := httptest.NewRequest(http.MethodPost, "/test", customClose)
+		recCloser := httptest.NewRecorder()
+		_ = rw.ServeHTTP(recCloser, reqCloser, caddyHandler)
+		_ = reqCloser.Body.Close()
+		if !closed {
+			t.Errorf("expected underlying request body closer to be called")
+		}
 	})
 }
+
+type testCloser struct {
+	io.Reader
+	onClose func()
+}
+
+func (tc *testCloser) Close() error {
+	if tc.onClose != nil {
+		tc.onClose()
+	}
+	return nil
+}
+
 
 

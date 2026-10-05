@@ -409,10 +409,14 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 			maxBytes = 64 * 1024
 		}
 
-		bodyBytes, err := io.ReadAll(io.LimitReader(req.Body, maxBytes))
+		origBody := req.Body
+		bodyBytes, err := io.ReadAll(io.LimitReader(origBody, maxBytes))
 		if err == nil && len(bodyBytes) > 0 {
 			// Re-assign a new ReadCloser so downstream handlers (reverse_proxy) can still read the entire body
-			req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(bodyBytes), req.Body))
+			req.Body = &bodyReadCloser{
+				Reader: io.MultiReader(bytes.NewReader(bodyBytes), origBody),
+				Closer: origBody,
+			}
 
 			bodyStr := string(bodyBytes)
 			unescapedBody, unerr := url.QueryUnescape(bodyStr)
@@ -455,9 +459,12 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 					break
 				}
 			}
-		} else if req.Body != nil {
-			// Restore empty or unread body
-			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		} else if origBody != nil {
+			// Restore empty or unread body while preserving Closer
+			req.Body = &bodyReadCloser{
+				Reader: bytes.NewReader(bodyBytes),
+				Closer: origBody,
+			}
 		}
 	}
 
@@ -563,3 +570,18 @@ var (
 	_ caddyhttp.MiddlewareHandler = (*RouteWarden)(nil)
 	_ caddyfile.Unmarshaler       = (*RouteWarden)(nil)
 )
+
+// bodyReadCloser combines an io.Reader and io.Closer to preserve the underlying
+// connection/body closer when request bodies are buffered and replayed.
+type bodyReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+func (b *bodyReadCloser) Close() error {
+	if b.Closer != nil {
+		return b.Closer.Close()
+	}
+	return nil
+}
+
