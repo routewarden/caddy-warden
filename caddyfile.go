@@ -21,6 +21,18 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 	return rw, err
 }
 
+func parseBoolArg(d *caddyfile.Dispenser, defaultVal bool) bool {
+	args := d.RemainingArgs()
+	if len(args) == 0 {
+		return defaultVal
+	}
+	if b, err := strconv.ParseBool(args[0]); err == nil {
+		return b
+	}
+	val := strings.ToLower(args[0])
+	return val == "yes" || val == "on"
+}
+
 func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	rw.Enabled = true
 	rw.EnableDefaultPatterns = true
@@ -34,17 +46,37 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		for d.NextBlock(0) {
 			switch d.Val() {
-			case "disable":
-				rw.Enabled = false
+			case "enabled":
+				rw.Enabled = parseBoolArg(d, true)
 
-			case "disable_default_patterns":
-				rw.EnableDefaultPatterns = false
+			case "enable_default_patterns":
+				rw.EnableDefaultPatterns = parseBoolArg(d, true)
 
-			case "disable_default_allow_patterns":
-				rw.EnableDefaultAllowPatterns = false
+			case "enable_default_allow_patterns":
+				rw.EnableDefaultAllowPatterns = parseBoolArg(d, true)
 
 			case "check_query":
-				rw.CheckQuery = true
+				rw.CheckQuery = parseBoolArg(d, true)
+
+			case "check_body":
+				rw.CheckBody = parseBoolArg(d, true)
+
+			case "check_body_max_bytes":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				bytesVal, err := strconv.ParseInt(d.Val(), 10, 64)
+				if err != nil {
+					return d.Errf("invalid check_body_max_bytes: %v", err)
+				}
+				rw.CheckBodyMaxBytes = bytesVal
+
+			case "check_body_patterns":
+				args := d.RemainingArgs()
+				if len(args) == 0 {
+					return d.ArgErr()
+				}
+				rw.CheckBodyPatterns = append(rw.CheckBodyPatterns, args...)
 
 			case "check_headers":
 				args := d.RemainingArgs()
@@ -57,35 +89,30 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				rw.Debug = true
 
 			case "security_log":
-				args := d.RemainingArgs()
-				if len(args) == 0 {
-					rw.SecurityLog = true
-				} else {
-					rw.SecurityLog = args[0] == "true" || args[0] == "1" || args[0] == "yes" || args[0] == "on"
-				}
+				rw.SecurityLog = parseBoolArg(d, true)
 
-			case "path_patterns", "block_patterns", "path_pattern", "block_pattern":
+			case "block_patterns":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
 					return d.ArgErr()
 				}
-				rw.PathPatterns = append(rw.PathPatterns, args...)
+				rw.BlockPatterns = append(rw.BlockPatterns, args...)
 
-			case "allow_patterns", "allow_pattern":
+			case "allow_patterns":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
 					return d.ArgErr()
 				}
 				rw.AllowPatterns = append(rw.AllowPatterns, args...)
 
-			case "allowed_ips", "allowed_ip":
+			case "allowed_ips":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
 					return d.ArgErr()
 				}
 				rw.AllowedIPs = append(rw.AllowedIPs, args...)
 
-			case "trusted_proxies", "trusted_proxy":
+			case "trusted_proxies":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
 					return d.ArgErr()
@@ -102,7 +129,7 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 				rw.Response.Mode = val
 
-			case "status_code", "status":
+			case "status_code":
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
@@ -132,7 +159,7 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 						}
 						rw.Response.Mode = val
 
-					case "status", "status_code":
+					case "status_code":
 						if !d.NextArg() {
 							return d.ArgErr()
 						}
