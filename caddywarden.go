@@ -1,8 +1,10 @@
 package caddywarden
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,8 +21,34 @@ import (
 
 func init() {
 	caddy.RegisterModule(RouteWarden{})
+	caddy.RegisterModule(RouteWardenSnakeCase{})
 	httpcaddyfile.RegisterHandlerDirective("routewarden", parseCaddyfile)
+	httpcaddyfile.RegisterHandlerDirective("route_warden", parseCaddyfile)
 }
+
+// RouteWardenSnakeCase is a Caddy module alias for the "route_warden" handler ID.
+type RouteWardenSnakeCase struct {
+	RouteWarden
+}
+
+// CaddyModule returns the Caddy module information for route_warden.
+func (RouteWardenSnakeCase) CaddyModule() caddy.ModuleInfo {
+	return caddy.ModuleInfo{
+		ID:  "http.handlers.route_warden",
+		New: func() caddy.Module {
+			return &RouteWardenSnakeCase{
+				RouteWarden: RouteWarden{
+					Enabled:                    true,
+					EnableDefaultPatterns:      true,
+					EnableDefaultAllowPatterns: true,
+					Methods:                    []string{"GET"},
+					Response:                   DefaultResponseConfig(),
+				},
+			}
+		},
+	}
+}
+
 
 // RouteWarden is a Caddy v2 HTTP middleware module that blocks reconnaissance
 // scans, sensitive file exposure, and path-evasion attacks.
@@ -28,7 +56,6 @@ type RouteWarden struct {
 	Enabled                    bool            `json:"enabled"`
 	EnableDefaultPatterns      bool            `json:"enable_default_patterns"`
 	EnableDefaultAllowPatterns bool            `json:"enable_default_allow_patterns"`
-	PathPatterns               []string        `json:"path_patterns,omitempty"`
 	BlockPatterns              []string        `json:"block_patterns,omitempty"`
 	AllowPatterns              []string        `json:"allow_patterns,omitempty"`
 	AllowedIPs                 []string        `json:"allowed_ips,omitempty"`
@@ -36,6 +63,9 @@ type RouteWarden struct {
 	Methods                    []string        `json:"methods,omitempty"`
 	CheckQuery                 bool            `json:"check_query,omitempty"`
 	CheckHeaders               []string        `json:"check_headers,omitempty"`
+	CheckBody                  bool            `json:"check_body,omitempty"`
+	CheckBodyMaxBytes          int64           `json:"check_body_max_bytes,omitempty"`
+	CheckBodyPatterns          []string        `json:"check_body_patterns,omitempty"`
 	StatusCode                 int             `json:"status_code,omitempty"`
 	CustomResponseText         string          `json:"custom_response_text,omitempty"`
 	Mode                       string          `json:"mode,omitempty"`
@@ -47,6 +77,7 @@ type RouteWarden struct {
 	methods         map[string]struct{}
 	compiledBlock   []*regexp.Regexp
 	compiledAllow   []*regexp.Regexp
+	compiledBody    []*regexp.Regexp
 	ipFilter        *IPFilter
 	responseHandler *ResponseHandler
 }
@@ -105,7 +136,6 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 	if rw.EnableDefaultPatterns {
 		allBlockPatterns = append(allBlockPatterns, DefaultBlockPatterns...)
 	}
-	allBlockPatterns = append(allBlockPatterns, rw.PathPatterns...)
 	allBlockPatterns = append(allBlockPatterns, rw.BlockPatterns...)
 
 	rw.compiledBlock = make([]*regexp.Regexp, 0, len(allBlockPatterns))
@@ -139,7 +169,23 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		rw.compiledAllow = append(rw.compiledAllow, re)
 	}
 
-	// 3. Initialize IP Filter
+	// 3. Compile Body Block Patterns
+	if rw.CheckBodyMaxBytes <= 0 {
+		rw.CheckBodyMaxBytes = 64 * 1024 // 64 KB safety limit
+	}
+	rw.compiledBody = make([]*regexp.Regexp, 0, len(rw.CheckBodyPatterns))
+	for _, p := range rw.CheckBodyPatterns {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		re, err := regexp.Compile(p)
+		if err != nil {
+			return fmt.Errorf("routewarden: invalid check_body regex %q: %w", p, err)
+		}
+		rw.compiledBody = append(rw.compiledBody, re)
+	}
+
+	// 4. Initialize IP Filter
 	if len(rw.AllowedIPs) > 0 || len(rw.TrustedProxies) > 0 {
 		filter, err := NewIPFilter(rw.AllowedIPs, rw.TrustedProxies)
 		if err != nil {
@@ -356,6 +402,72 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 		}
 	}
 
+	// Optional: Check Request Body (e.g. POST form payloads, OAuth grants, JSON params)
+	if !isBlocked && (rw.CheckBody || len(rw.compiledBody) > 0) && req.Body != nil {
+		maxBytes := rw.CheckBodyMaxBytes
+		if maxBytes <= 0 {
+			maxBytes = 64 * 1024
+		}
+
+		origBody := req.Body
+		bodyBytes, err := io.ReadAll(io.LimitReader(origBody, maxBytes))
+		if err == nil && len(bodyBytes) > 0 {
+			// Re-assign a new ReadCloser so downstream handlers (reverse_proxy) can still read the entire body
+			req.Body = &bodyReadCloser{
+				Reader: io.MultiReader(bytes.NewReader(bodyBytes), origBody),
+				Closer: origBody,
+			}
+
+			bodyStr := string(bodyBytes)
+			unescapedBody, unerr := url.QueryUnescape(bodyStr)
+			if unerr != nil {
+				unescapedBody = bodyStr
+			}
+
+			bodyCandidates := []string{bodyStr, unescapedBody}
+
+			// If specific CheckBodyPatterns were defined, check against them:
+			patternsToCheck := rw.compiledBody
+			// If CheckBody is enabled but no custom CheckBodyPatterns were provided, match against compiledBlock:
+			if len(patternsToCheck) == 0 {
+				patternsToCheck = rw.compiledBlock
+			}
+
+			if rw.Debug && rw.logger != nil {
+				rw.logger.Debug("routewarden: checking request body",
+					zap.Int("body_len", len(bodyBytes)),
+					zap.Int("patterns_count", len(patternsToCheck)),
+				)
+			}
+
+			for _, bc := range bodyCandidates {
+				for _, re := range patternsToCheck {
+					if re.MatchString(bc) {
+						isBlocked = true
+						blockedByPattern = re.String()
+						blockedTarget = "[body payload]"
+						blockedReason = "body_blocked"
+						if rw.Debug && rw.logger != nil {
+							rw.logger.Debug("routewarden: body candidate matched block pattern",
+								zap.String("matched_pattern", blockedByPattern),
+							)
+						}
+						break
+					}
+				}
+				if isBlocked {
+					break
+				}
+			}
+		} else if origBody != nil {
+			// Restore empty or unread body while preserving Closer
+			req.Body = &bodyReadCloser{
+				Reader: bytes.NewReader(bodyBytes),
+				Closer: origBody,
+			}
+		}
+	}
+
 	if isBlocked {
 		rw.logSecurityEvent(req, blockedTarget, blockedByPattern, blockedReason)
 		if rw.logger != nil {
@@ -458,3 +570,18 @@ var (
 	_ caddyhttp.MiddlewareHandler = (*RouteWarden)(nil)
 	_ caddyfile.Unmarshaler       = (*RouteWarden)(nil)
 )
+
+// bodyReadCloser combines an io.Reader and io.Closer to preserve the underlying
+// connection/body closer when request bodies are buffered and replayed.
+type bodyReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+func (b *bodyReadCloser) Close() error {
+	if b.Closer != nil {
+		return b.Closer.Close()
+	}
+	return nil
+}
+

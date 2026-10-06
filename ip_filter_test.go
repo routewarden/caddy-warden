@@ -39,6 +39,13 @@ func TestIPFilter_Unit(t *testing.T) {
 		t.Errorf("expected 2001:db8::1 in 2001:db8::/32 to be allowed")
 	}
 
+	// 3b. IPv6 with link-local zone identifier
+	req3b := httptest.NewRequest(http.MethodGet, "/", nil)
+	req3b.RemoteAddr = "[2001:db8::1%eth0]:5678"
+	if !filter.IsAllowed(req3b) {
+		t.Errorf("expected 2001:db8::1%%eth0 to be allowed")
+	}
+
 	// 4. X-Forwarded-For header match
 	req4 := httptest.NewRequest(http.MethodGet, "/", nil)
 	req4.RemoteAddr = "203.0.113.1:80"
@@ -222,5 +229,27 @@ func TestIPFilter_TrustedProxies(t *testing.T) {
 	reqTrustedNotAllowed.Header.Set("X-Forwarded-For", "198.51.100.1")
 	if filter.IsAllowed(reqTrustedNotAllowed) {
 		t.Errorf("forwarded non-whitelisted IP from trusted proxy should NOT be allowed")
+	}
+}
+
+func TestIPFilter_BracketedAndCIDRConfig(t *testing.T) {
+	filter, err := caddywarden.NewIPFilter(
+		[]string{"[2001:db8::1]", "[2001:db8:cafe::]/48", "fe80::1%eth0"},
+		[]string{"[::1]", "[2001:db8:ffff::]/64", "fe80::2%eth0"},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error parsing bracketed and scoped IPs/CIDRs: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "[2001:db8::1]:12345"
+	if !filter.IsAllowed(req) {
+		t.Errorf("expected allowed for bracketed IPv6")
+	}
+
+	reqSubnet := httptest.NewRequest(http.MethodGet, "/", nil)
+	reqSubnet.RemoteAddr = "[2001:db8:cafe::42]:54321"
+	if !filter.IsAllowed(reqSubnet) {
+		t.Errorf("expected allowed for bracketed CIDR subnet")
 	}
 }

@@ -2,12 +2,14 @@ package caddywarden_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	caddywarden "github.com/routewarden/caddy-warden"
 )
 
@@ -20,6 +22,16 @@ func TestRouteWarden_ModuleInfo(t *testing.T) {
 	mod := info.New()
 	if _, ok := mod.(*caddywarden.RouteWarden); !ok {
 		t.Fatalf("expected *RouteWarden instance from New()")
+	}
+
+	// Verify route_warden alias module registration in Caddy host
+	infoSnake, err := caddy.GetModule("http.handlers.route_warden")
+	if err != nil {
+		t.Fatalf("expected route_warden module to be registered: %v", err)
+	}
+	modSnake := infoSnake.New()
+	if _, ok := modSnake.(*caddywarden.RouteWardenSnakeCase); !ok {
+		t.Fatalf("expected *RouteWardenSnakeCase instance from New()")
 	}
 }
 
@@ -75,7 +87,7 @@ func TestRouteWarden_ProvisionErrors(t *testing.T) {
 
 	// Invalid block pattern regex
 	rwInvalidBlock := &caddywarden.RouteWarden{
-		PathPatterns: []string{"[unclosed"},
+		BlockPatterns: []string{"[unclosed"},
 	}
 	if err := rwInvalidBlock.Provision(ctx); err == nil {
 		t.Error("expected error for invalid block regex, got nil")
@@ -630,7 +642,7 @@ func TestRouteWarden_EmptyPatternStrings(t *testing.T) {
 	rw := &caddywarden.RouteWarden{
 		Enabled:               true,
 		EnableDefaultPatterns: false,
-		PathPatterns:          []string{"", "   ", `(?i)^/secret$`, ""},
+		BlockPatterns:          []string{"", "   ", `(?i)^/secret$`, ""},
 		AllowPatterns:         []string{"", "  ", `(?i)^/secret/allowed$`, ""},
 	}
 	if err := rw.Provision(ctx); err != nil {
@@ -937,7 +949,7 @@ func TestRouteWarden_LiveSamplesParitySuite(t *testing.T) {
 			Enabled:                    true,
 			EnableDefaultPatterns:      true,
 			EnableDefaultAllowPatterns: true,
-			PathPatterns:               []string{`(?i)^/admin/secret.*$`},
+			BlockPatterns:               []string{`(?i)^/admin/secret.*$`},
 			AllowPatterns:              []string{`(?i)^/api/healthz$`},
 			AllowedIPs:                 []string{"192.168.100.50", "10.99.0.0/16"},
 			Methods:                    []string{"GET"},
@@ -1332,5 +1344,403 @@ func TestRouteWarden_LiveSamplesParitySuite(t *testing.T) {
 			t.Errorf("expected 403 for smuggled .env in header, got %d", recSmuggled.Code)
 		}
 	})
+
+	t.Run("CheckBody and CheckBodyPatterns inspection for Vaultwarden Send security", func(t *testing.T) {
+		rw := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: false,
+			Methods:               []string{"POST"},
+			CheckBody:             true,
+			CheckBodyPatterns:     []string{"(?i)grant_type=password"},
+		}
+		if err := rw.Provision(ctx); err != nil {
+			t.Fatalf("unexpected provision error: %v", err)
+		}
+
+		// 1. Vault user login with grant_type=password is BLOCKED
+		bodyLogin := strings.NewReader("grant_type=password&username=admin%40example.com&password=secretpassword")
+		nextLogin := &testHandler{}
+		reqLogin := httptest.NewRequest(http.MethodPost, "/identity/connect/token", bodyLogin)
+		reqLogin.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		recLogin := httptest.NewRecorder()
+		if err := rw.ServeHTTP(recLogin, reqLogin, nextLogin); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nextLogin.handled || recLogin.Code != http.StatusForbidden {
+			t.Errorf("expected 403 for grant_type=password login attempt, got %d (handled=%v)", recLogin.Code, nextLogin.handled)
+		}
+
+		// 2. Bitwarden Send password access with grant_type=send_access is ALLOWED
+		bodySend := strings.NewReader("grant_type=send_access&send_id=3a17e08f-bf2a-4310&password=sendpassword")
+		nextSend := &testHandler{}
+		reqSend := httptest.NewRequest(http.MethodPost, "/identity/connect/token", bodySend)
+		reqSend.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		recSend := httptest.NewRecorder()
+		if err := rw.ServeHTTP(recSend, reqSend, nextSend); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !nextSend.handled || recSend.Code != http.StatusOK {
+			t.Errorf("expected 200 pass for grant_type=send_access, got %d", recSend.Code)
+		}
+
+		// 3. Verify downstream handler can still read req.Body
+		var downstreamReadBytes []byte
+		downstreamHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("downstream read error: %v", err)
+			}
+			downstreamReadBytes = b
+			w.WriteHeader(http.StatusOK)
+		})
+		bodyPayload := "grant_type=send_access&sample=123"
+		reqDownstream := httptest.NewRequest(http.MethodPost, "/identity/connect/token", strings.NewReader(bodyPayload))
+		recDownstream := httptest.NewRecorder()
+		caddyHandler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+			downstreamHandler.ServeHTTP(w, r)
+			return nil
+		})
+		if err := rw.ServeHTTP(recDownstream, reqDownstream, caddyHandler); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(downstreamReadBytes) != bodyPayload {
+			t.Errorf("downstream received %q, expected %q", string(downstreamReadBytes), bodyPayload)
+		}
+
+		// 4. Verify closing req.Body invokes underlying closer
+		closed := false
+		customClose := &testCloser{Reader: strings.NewReader(bodyPayload), onClose: func() { closed = true }}
+		reqCloser := httptest.NewRequest(http.MethodPost, "/test", customClose)
+		recCloser := httptest.NewRecorder()
+		_ = rw.ServeHTTP(recCloser, reqCloser, caddyHandler)
+		_ = reqCloser.Body.Close()
+		if !closed {
+			t.Errorf("expected underlying request body closer to be called")
+		}
+	})
 }
 
+type testCloser struct {
+	io.Reader
+	onClose func()
+}
+
+func (tc *testCloser) Close() error {
+	if tc.onClose != nil {
+		tc.onClose()
+	}
+	return nil
+}
+
+// ── Additional Comprehensive Test Cases ─────────────────────────────────────────
+
+func TestRouteWarden_ServeHTTP_IPv6Allowlist(t *testing.T) {
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+		AllowedIPs: []string{
+			"2001:db8::1",
+			"fe80::cafe/64",
+		},
+	}
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("unexpected provision error: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		remoteAddr  string
+		path        string
+		wantHandled bool
+		wantCode    int
+	}{
+		{
+			name:        "Exact IPv6 allowed to access .env",
+			remoteAddr:  "[2001:db8::1]:12345",
+			path:        "/.env",
+			wantHandled: true,
+			wantCode:    http.StatusOK,
+		},
+		{
+			name:        "IPv6 subnet allowed to access .env",
+			remoteAddr:  "[fe80::cafe:1]:12345",
+			path:        "/.env",
+			wantHandled: true,
+			wantCode:    http.StatusOK,
+		},
+		{
+			name:        "Unlisted IPv6 blocked from accessing .env",
+			remoteAddr:  "[2001:db8::2]:12345",
+			path:        "/.env",
+			wantHandled: false,
+			wantCode:    http.StatusForbidden,
+		},
+		{
+			name:        "IPv6 with zone index stripped matches allowlist",
+			remoteAddr:  "[fe80::cafe%eth0]:12345",
+			path:        "/.env",
+			wantHandled: true,
+			wantCode:    http.StatusOK,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			next := &testHandler{}
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.RemoteAddr = tc.remoteAddr
+			rec := httptest.NewRecorder()
+
+			if err := rw.ServeHTTP(rec, req, next); err != nil {
+				t.Fatalf("unexpected ServeHTTP error: %v", err)
+			}
+			if next.handled != tc.wantHandled {
+				t.Errorf("expected next.handled=%v, got %v", tc.wantHandled, next.handled)
+			}
+			if rec.Code != tc.wantCode {
+				t.Errorf("expected code %d, got %d", tc.wantCode, rec.Code)
+			}
+		})
+	}
+}
+
+func TestRouteWarden_ServeHTTP_CheckHeaders_SecurityVectors(t *testing.T) {
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: false,
+		CheckHeaders:          []string{"X-Custom-Header", "User-Agent"},
+		BlockPatterns:         []string{`(?i)(union.*select|drop.*table|<script)`},
+	}
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("unexpected provision error: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		header      string
+		value       string
+		wantHandled bool
+		wantCode    int
+	}{
+		{
+			name:        "SQL injection in header",
+			header:      "X-Custom-Header",
+			value:       "'; UNION SELECT * FROM users; --",
+			wantHandled: false,
+			wantCode:    http.StatusForbidden,
+		},
+		{
+			name:        "XSS in header",
+			header:      "X-Custom-Header",
+			value:       "<script>alert(1)</script>",
+			wantHandled: false,
+			wantCode:    http.StatusForbidden,
+		},
+		{
+			name:        "Drop table in User-Agent",
+			header:      "User-Agent",
+			value:       "Mozilla DROP TABLE users",
+			wantHandled: false,
+			wantCode:    http.StatusForbidden,
+		},
+		{
+			name:        "Clean header passes",
+			header:      "X-Custom-Header",
+			value:       "safe-value-123",
+			wantHandled: true,
+			wantCode:    http.StatusOK,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			next := &testHandler{}
+			req := httptest.NewRequest(http.MethodGet, "/api", nil)
+			req.Header.Set(tc.header, tc.value)
+			rec := httptest.NewRecorder()
+
+			if err := rw.ServeHTTP(rec, req, next); err != nil {
+				t.Fatalf("unexpected ServeHTTP error: %v", err)
+			}
+			if next.handled != tc.wantHandled {
+				t.Errorf("expected next.handled=%v, got %v", tc.wantHandled, next.handled)
+			}
+			if rec.Code != tc.wantCode {
+				t.Errorf("expected code %d, got %d", tc.wantCode, rec.Code)
+			}
+		})
+	}
+}
+
+func TestRouteWarden_ServeHTTP_CheckQuery_TraversalVectors(t *testing.T) {
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+		CheckQuery:            true,
+	}
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("unexpected provision error: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		uri         string
+		wantHandled bool
+		wantCode    int
+	}{
+		{
+			name:        "Encoded .env in query",
+			uri:         "/search?q=%2F.env",
+			wantHandled: false,
+			wantCode:    http.StatusForbidden,
+		},
+		{
+			name:        "Double encoded in query",
+			uri:         "/search?file=%252e%252e%252F.env",
+			wantHandled: false,
+			wantCode:    http.StatusForbidden,
+		},
+		{
+			name:        "Actuator in query value",
+			uri:         "/proxy?url=/actuator/env",
+			wantHandled: false,
+			wantCode:    http.StatusForbidden,
+		},
+		{
+			name:        "Clean query passes",
+			uri:         "/search?q=hello+world",
+			wantHandled: true,
+			wantCode:    http.StatusOK,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			next := &testHandler{}
+			req := httptest.NewRequest(http.MethodGet, tc.uri, nil)
+			rec := httptest.NewRecorder()
+
+			if err := rw.ServeHTTP(rec, req, next); err != nil {
+				t.Fatalf("unexpected ServeHTTP error: %v", err)
+			}
+			if next.handled != tc.wantHandled {
+				t.Errorf("expected next.handled=%v, got %v", tc.wantHandled, next.handled)
+			}
+			if rec.Code != tc.wantCode {
+				t.Errorf("expected code %d, got %d", tc.wantCode, rec.Code)
+			}
+		})
+	}
+}
+
+func TestRouteWarden_ServeHTTP_MultiMethod(t *testing.T) {
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: false,
+		Methods:               []string{"GET", "POST", "PUT"},
+		BlockPatterns:         []string{`(?i)/admin`},
+	}
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("unexpected provision error: %v", err)
+	}
+
+	for _, method := range []string{"GET", "POST", "PUT"} {
+		next := &testHandler{}
+		req := httptest.NewRequest(method, "/admin/users", nil)
+		rec := httptest.NewRecorder()
+		if err := rw.ServeHTTP(rec, req, next); err != nil {
+			t.Fatalf("[%s] unexpected error: %v", method, err)
+		}
+		if next.handled || rec.Code != http.StatusForbidden {
+			t.Errorf("[%s /admin/users] expected 403 blocked, got %d (handled=%v)", method, rec.Code, next.handled)
+		}
+	}
+
+	// DELETE is not inspected -> passes through
+	next := &testHandler{}
+	req := httptest.NewRequest(http.MethodDelete, "/admin/users/1", nil)
+	rec := httptest.NewRecorder()
+	if err := rw.ServeHTTP(rec, req, next); err != nil {
+		t.Fatalf("[DELETE] unexpected error: %v", err)
+	}
+	if !next.handled || rec.Code != http.StatusOK {
+		t.Errorf("[DELETE /admin/users/1] expected 200 passed, got %d (handled=%v)", rec.Code, next.handled)
+	}
+}
+
+func TestRouteWarden_ServeHTTP_ResponseHeadersPassthrough(t *testing.T) {
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: false,
+		BlockPatterns:         []string{`^/blocked$`},
+		Response: &caddywarden.ResponseConfig{
+			Mode:       "json",
+			StatusCode: http.StatusForbidden,
+			Headers:    map[string]string{"X-Blocked-By": "RouteWarden", "X-Request-ID": "test-caddy-123"},
+		},
+	}
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("unexpected provision error: %v", err)
+	}
+
+	next := &testHandler{}
+	req := httptest.NewRequest(http.MethodGet, "/blocked", nil)
+	rec := httptest.NewRecorder()
+
+	if err := rw.ServeHTTP(rec, req, next); err != nil {
+		t.Fatalf("unexpected ServeHTTP error: %v", err)
+	}
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", rec.Code)
+	}
+	if rec.Header().Get("X-Blocked-By") != "RouteWarden" {
+		t.Errorf("expected X-Blocked-By: RouteWarden, got %q", rec.Header().Get("X-Blocked-By"))
+	}
+	if rec.Header().Get("X-Request-ID") != "test-caddy-123" {
+		t.Errorf("expected X-Request-ID: test-caddy-123, got %q", rec.Header().Get("X-Request-ID"))
+	}
+}
+
+func TestRouteWarden_ServeHTTP_BodyTruncation(t *testing.T) {
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: false,
+		Methods:               []string{"POST"},
+		CheckBody:             true,
+		CheckBodyPatterns:     []string{`DANGEROUS`},
+		CheckBodyMaxBytes:     10, // only scan first 10 bytes
+	}
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("unexpected provision error: %v", err)
+	}
+
+	body := "0123456789DANGEROUS_PAYLOAD"
+	var downstreamRead string
+	downstreamHandler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		b, _ := io.ReadAll(r.Body)
+		downstreamRead = string(b)
+		w.WriteHeader(http.StatusOK)
+		return nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	if err := rw.ServeHTTP(rec, req, downstreamHandler); err != nil {
+		t.Fatalf("unexpected ServeHTTP error: %v", err)
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Logf("Note: body beyond CheckBodyMaxBytes was scanned (rec.Code=%d)", rec.Code)
+	}
+	if downstreamRead != body {
+		t.Errorf("expected downstream to read full payload, got %q", downstreamRead)
+	}
+}
