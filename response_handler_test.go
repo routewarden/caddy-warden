@@ -886,3 +886,22 @@ func TestResponseHandler_Redirect_UnsafeSchemes(t *testing.T) {
 		}
 	}
 }
+
+func TestResponseHandler_Proxy_UnsafeSchemes(t *testing.T) {
+	unsafeURLs := []string{
+		"javascript:alert(1)",
+		"data:text/plain,hello",
+		"ftp://attacker.com/sink",
+		"file:///etc/passwd",
+	}
+
+	for _, u := range unsafeURLs {
+		_, err := caddywarden.NewResponseHandler(&caddywarden.ResponseConfig{
+			Mode:     "proxy",
+			ProxyURL: u,
+		}, 0, "", false)
+		if err == nil {
+			t.Errorf("expected error for unsafe proxyUrl %q, got nil", u)
+		}
+	}
+}
