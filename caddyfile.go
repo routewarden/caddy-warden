@@ -26,8 +26,11 @@ func parseBoolArg(d *caddyfile.Dispenser, defaultVal bool) bool {
 	if len(args) == 0 {
 		return defaultVal
 	}
+	if b, err := strconv.ParseBool(args[0]); err == nil {
+		return b
+	}
 	val := strings.ToLower(args[0])
-	return val == "true" || val == "1" || val == "yes" || val == "on"
+	return val == "yes" || val == "on"
 }
 
 func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
@@ -86,12 +89,7 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				rw.Debug = true
 
 			case "security_log":
-				args := d.RemainingArgs()
-				if len(args) == 0 {
-					rw.SecurityLog = true
-				} else {
-					rw.SecurityLog = args[0] == "true" || args[0] == "1" || args[0] == "yes" || args[0] == "on"
-				}
+				rw.SecurityLog = parseBoolArg(d, true)
 
 			case "block_patterns":
 				args := d.RemainingArgs()
