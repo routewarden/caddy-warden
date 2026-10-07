@@ -9,13 +9,13 @@
         debug
         security_log
         check_query
-        path_patterns (?i)^/admin/secret.*$
+        block_patterns (?i)^/admin/secret.*$
         allow_patterns (?i)^/api/healthz$
         allowed_ips 192.168.100.50 10.99.0.0/16
         methods GET POST
         response {
             mode json
-            status 403
+            status_code 403
             header X-RouteWarden-Protection Active
             body "{\"error\":\"Access Denied\",\"security\":\"routewarden\"}"
         }
@@ -28,7 +28,7 @@
     routewarden {
         response {
             mode html
-            status 403
+            status_code 403
             header X-RouteWarden-Mode html
             body "<html><body><h1>Access Denied by RouteWarden</h1></body></html>"
         }
@@ -41,7 +41,7 @@
     routewarden {
         response {
             mode text
-            status 403
+            status_code 403
             header X-RouteWarden-Mode text
             body "Access Forbidden: RouteWarden Text Mode"
         }
@@ -54,7 +54,7 @@
     routewarden {
         response {
             mode xml
-            status 403
+            status_code 403
             header X-RouteWarden-Mode xml
         }
     }
@@ -66,7 +66,7 @@
     routewarden {
         response {
             mode captcha
-            status 403
+            status_code 403
             captcha turnstile 0x4AAAAAAtestkey "Security Verification Challenge"
         }
     }
@@ -78,7 +78,7 @@
     routewarden {
         response {
             mode redirect
-            status 302
+            status_code 302
             redirect_url https://honeypot.local/sinkhole
         }
     }
@@ -90,8 +90,8 @@
     routewarden {
         response {
             mode rateLimitChallenge
-            status 429
-            retry_after 180
+            status_code 429
+            retry_after_seconds 180
         }
     }
     respond "OK: Upstream Reached (8086)" 200
@@ -112,7 +112,7 @@
     routewarden {
         response {
             mode gzipBomb
-            status 200
+            status_code 200
             gzip_bomb_mb 1
         }
     }
@@ -134,7 +134,7 @@
     routewarden {
         response {
             mode infiniteStream
-            status 200
+            status_code 200
             stream_size_mb 2
         }
     }
@@ -155,7 +155,7 @@
 # 13. Port 8092: Disabled flag test (disable)
 :8092 {
     routewarden {
-        disable
+        enabled false
     }
     respond "OK: RouteWarden Disabled - Upstream Reached (8092)" 200
 }
@@ -166,7 +166,7 @@
         methods POST DELETE
         response {
             mode json
-            status 403
+            status_code 403
         }
     }
     respond "OK: Upstream Reached (8093)" 200
@@ -178,7 +178,7 @@
         check_headers X-Forwarded-Uri X-Rewrite-URL
         response {
             mode json
-            status 403
+            status_code 403
             body "{\"error\":\"Blocked\",\"reason\":\"Sensitive path detected in forwarded header\"}"
         }
     }

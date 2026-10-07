@@ -54,7 +54,7 @@ Then build Caddy with RouteWarden:
 ```bash
 # Pin to a specific version (recommended for production)
 xcaddy build \
-    --with github.com/routewarden/caddy-warden@v1.4.0
+    --with github.com/routewarden/caddy-warden@v1.4.1
 
 # Or build using the latest version
 xcaddy build \
@@ -79,7 +79,7 @@ Use Caddy's official multi-stage builder to create your image:
 FROM caddy:2.9-builder AS builder
 
 RUN xcaddy build \
-    --with github.com/routewarden/caddy-warden@v1.4.0
+    --with github.com/routewarden/caddy-warden@v1.4.1
 
 FROM caddy:2.9-alpine
 
@@ -125,7 +125,7 @@ volumes:
 If you build your own Caddy binary in Go, import RouteWarden for automatic registration:
 
 ```bash
-go get github.com/routewarden/caddy-warden@v1.4.0
+go get github.com/routewarden/caddy-warden@v1.4.1
 ```
 
 ```go
@@ -156,7 +156,7 @@ Add `order routewarden first` to your global options block, then configure `rout
 example.com {
     routewarden {
         # Custom regex patterns you want to block
-        path_patterns (?i)^/admin/(secrets|internal)(/.*)?$
+        block_patterns (?i)^/admin/(secrets|internal)(/.*)?$
 
         # Patterns that should always be allowed
         allow_patterns (?i)^/api/internal/health$
@@ -170,7 +170,7 @@ example.com {
         # What to return when a request is blocked
         response {
             mode json
-            status 403
+            status_code 403
             body "{\"error\":\"Forbidden\",\"message\":\"Access to sensitive endpoint is blocked\"}"
         }
     }
@@ -218,7 +218,7 @@ routewarden {
     check_body_max_bytes 65536
 
     # Specific regex patterns to match against the request body
-    body_patterns <regex...>
+    check_body_patterns <regex...>
 
     # Enable verbose debug logs (evaluations, candidate paths, IP matching)
     debug
@@ -227,7 +227,7 @@ routewarden {
     security_log
 
     # Custom regex patterns to block
-    path_patterns <regex...>
+    block_patterns <regex...>
 
     # Custom regex patterns to allow
     allow_patterns <regex...>
@@ -241,15 +241,15 @@ routewarden {
     # Response behavior
     response {
         mode <json|html|text|captcha|redirect|silentDrop|gzipBomb|tarpit|fakeSuccess|rateLimitChallenge|proxy|infiniteStream|xml>
-        status <int>
+        status_code <int>
         content_type <string>
         body <string>
         redirect_url <string>
         proxy_url <string>
         gzip_bomb_mb <int>
-        retry_after <int>
+        retry_after_seconds <int>
         tarpit_delay_ms <int>
-        tarpit_max_duration <int>
+        tarpit_max_duration_seconds <int>
         stream_size_mb <int>
         header <name> <value>
         captcha <provider> <site_key> [title]

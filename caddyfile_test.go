@@ -156,9 +156,9 @@ func TestCaddyfile_ComprehensiveDirectives(t *testing.T) {
 			redirect_url https://honeypot.internal/sink
 			proxy_url http://127.0.0.1:9999
 			gzip_bomb_mb 15
-			retry_after 120
+			retry_after_seconds 120
 			tarpit_delay_ms 500
-			tarpit_max_duration 45
+			tarpit_max_duration_seconds 45
 			stream_size_mb 50
 			header X-Warden-Shield Active
 			header X-Block-Reason SecurityPolicy
@@ -291,6 +291,7 @@ func TestCaddyfile_ParsingErrors(t *testing.T) {
 		{"unknown routewarden directive", "routewarden {\n unknown_directive\n}"},
 		{"empty response mode", "routewarden {\n response {\n mode\n }\n}"},
 		{"empty response status_code", "routewarden {\n response {\n status_code\n }\n}"},
+		{"unrecognized response status (must use status_code)", "routewarden {\n response {\n status 403\n }\n}"},
 		{"invalid response status_code non-int", "routewarden {\n response {\n status_code abc\n }\n}"},
 		{"empty content_type", "routewarden {\n response {\n content_type\n }\n}"},
 		{"empty body", "routewarden {\n response {\n body\n }\n}"},
@@ -298,12 +299,12 @@ func TestCaddyfile_ParsingErrors(t *testing.T) {
 		{"empty proxy_url", "routewarden {\n response {\n proxy_url\n }\n}"},
 		{"empty gzip_bomb_mb", "routewarden {\n response {\n gzip_bomb_mb\n }\n}"},
 		{"invalid gzip_bomb_mb non-int", "routewarden {\n response {\n gzip_bomb_mb abc\n }\n}"},
-		{"empty retry_after", "routewarden {\n response {\n retry_after\n }\n}"},
-		{"invalid retry_after non-int", "routewarden {\n response {\n retry_after abc\n }\n}"},
+		{"empty retry_after_seconds", "routewarden {\n response {\n retry_after_seconds\n }\n}"},
+		{"invalid retry_after_seconds non-int", "routewarden {\n response {\n retry_after_seconds abc\n }\n}"},
 		{"empty tarpit_delay_ms", "routewarden {\n response {\n tarpit_delay_ms\n }\n}"},
 		{"invalid tarpit_delay_ms non-int", "routewarden {\n response {\n tarpit_delay_ms abc\n }\n}"},
-		{"empty tarpit_max_duration", "routewarden {\n response {\n tarpit_max_duration\n }\n}"},
-		{"invalid tarpit_max_duration non-int", "routewarden {\n response {\n tarpit_max_duration abc\n }\n}"},
+		{"empty tarpit_max_duration_seconds", "routewarden {\n response {\n tarpit_max_duration_seconds\n }\n}"},
+		{"invalid tarpit_max_duration_seconds non-int", "routewarden {\n response {\n tarpit_max_duration_seconds abc\n }\n}"},
 		{"empty stream_size_mb", "routewarden {\n response {\n stream_size_mb\n }\n}"},
 		{"invalid stream_size_mb non-int", "routewarden {\n response {\n stream_size_mb abc\n }\n}"},
 		{"missing header value", "routewarden {\n response {\n header X-Key\n }\n}"},
@@ -323,7 +324,26 @@ func TestCaddyfile_ParsingErrors(t *testing.T) {
 	}
 }
 
-
+func TestCaddyfile_StatusCodeCanonical(t *testing.T) {
+	input := `routewarden {
+		block_patterns (?i)^/secret$
+		response {
+			mode json
+			status_code 404
+		}
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	rw := &caddywarden.RouteWarden{}
+	if err := rw.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+	if rw.Response == nil {
+		t.Fatal("Response is nil")
+	}
+	if rw.Response.StatusCode != 404 {
+		t.Errorf("expected StatusCode 404, got %d", rw.Response.StatusCode)
+	}
+}
 
 func TestCaddyfile_MethodsDirective(t *testing.T) {
 	t.Run("Default methods when omitted", func(t *testing.T) {
@@ -552,6 +572,13 @@ func TestCaddyfile_MethodsDirective(t *testing.T) {
 			"path_patterns (?i)^/p$",
 			"body_patterns (?i)secret",
 			"body_pattern (?i)secret",
+			"status 403",
+			"action json",
+			"trusted_proxy 192.168.1.1",
+			"response {\n status 403\n}",
+			"response {\n action json\n}",
+			"response {\n retry_after 120\n}",
+			"response {\n tarpit_max_duration 45\n}",
 		}
 		for _, alias := range aliases {
 			snippet := fmt.Sprintf("routewarden {\n%s\n}", alias)
@@ -626,6 +653,102 @@ func TestCaddyfile_MethodsDirective(t *testing.T) {
 			t.Errorf("expected Enabled to be true")
 		}
 	})
+}
+
+func TestCaddyfile_MultipleBlockAndAllowPatterns(t *testing.T) {
+	snippet := `routewarden {
+		enabled true
+		block_patterns (?i)^/admin/.*$ (?i)\.(key|pem)$
+		block_patterns (?i)^/internal/metrics$
+		allow_patterns (?i)^/admin/health$ (?i)^/admin/assets/.*$
+		allow_patterns (?i)^/public/.*$
+	}`
+	d := caddyfile.NewTestDispenser(snippet)
+	rw := &caddywarden.RouteWarden{}
+	if err := rw.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+
+	expectedBlocks := []string{
+		`(?i)^/admin/.*$`,
+		`(?i)\.(key|pem)$`,
+		`(?i)^/internal/metrics$`,
+	}
+	if len(rw.BlockPatterns) != len(expectedBlocks) {
+		t.Fatalf("expected %d BlockPatterns, got %d: %v", len(expectedBlocks), len(rw.BlockPatterns), rw.BlockPatterns)
+	}
+	for i, exp := range expectedBlocks {
+		if rw.BlockPatterns[i] != exp {
+			t.Errorf("BlockPatterns[%d] expected %q, got %q", i, exp, rw.BlockPatterns[i])
+		}
+	}
+
+	expectedAllows := []string{
+		`(?i)^/admin/health$`,
+		`(?i)^/admin/assets/.*$`,
+		`(?i)^/public/.*$`,
+	}
+	if len(rw.AllowPatterns) != len(expectedAllows) {
+		t.Fatalf("expected %d AllowPatterns, got %d: %v", len(expectedAllows), len(rw.AllowPatterns), rw.AllowPatterns)
+	}
+	for i, exp := range expectedAllows {
+		if rw.AllowPatterns[i] != exp {
+			t.Errorf("AllowPatterns[%d] expected %q, got %q", i, exp, rw.AllowPatterns[i])
+		}
+	}
+
+	// Verify provisioning compiles the regexes without error
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("unexpected provision error: %v", err)
+	}
+}
+
+func TestCaddyfile_ResponseExtendedDirectives(t *testing.T) {
+	snippet := `routewarden {
+		response {
+			mode captcha
+			status_code 403
+			retry_after_seconds 240
+			tarpit_max_duration_seconds 90
+			captcha {
+				provider turnstile
+				site_key "0x4AAAAAAtestkey"
+				title "Security Verification"
+				template "<html><body>custom</body></html>"
+			}
+		}
+	}`
+	d := caddyfile.NewTestDispenser(snippet)
+	rw := &caddywarden.RouteWarden{}
+	if err := rw.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+
+	if rw.Response == nil {
+		t.Fatal("expected Response to be non-nil")
+	}
+	if rw.Response.RetryAfterSeconds != 240 {
+		t.Errorf("expected RetryAfterSeconds=240, got %d", rw.Response.RetryAfterSeconds)
+	}
+	if rw.Response.TarpitMaxDurationSeconds != 90 {
+		t.Errorf("expected TarpitMaxDurationSeconds=90, got %d", rw.Response.TarpitMaxDurationSeconds)
+	}
+	if rw.Response.Captcha == nil {
+		t.Fatal("expected Captcha to be non-nil")
+	}
+	if rw.Response.Captcha.Provider != "turnstile" {
+		t.Errorf("expected Provider='turnstile', got %q", rw.Response.Captcha.Provider)
+	}
+	if rw.Response.Captcha.SiteKey != "0x4AAAAAAtestkey" {
+		t.Errorf("expected SiteKey='0x4AAAAAAtestkey', got %q", rw.Response.Captcha.SiteKey)
+	}
+	if rw.Response.Captcha.Title != "Security Verification" {
+		t.Errorf("expected Title='Security Verification', got %q", rw.Response.Captcha.Title)
+	}
+	if rw.Response.Captcha.Template != "<html><body>custom</body></html>" {
+		t.Errorf("expected Template='<html><body>custom</body></html>', got %q", rw.Response.Captcha.Template)
+	}
 }
 
 

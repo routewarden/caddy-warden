@@ -14,16 +14,16 @@ concurrency:
 
 jobs:
   test-go:
-    name: Go 1.25.1 Test
+    name: Go 1.26.0 Test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Go 1.25.1
+      - name: Set up Go 1.26.0
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.1"
+          go-version: "1.26.0"
           cache: true
 
       - name: Run Go Tests with Race Detection

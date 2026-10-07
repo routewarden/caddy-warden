@@ -39,7 +39,7 @@ samples/
 | **8089** | `silentDrop` | Abruptly terminates TCP socket connection upon probe. |
 | **8090** | `infiniteStream` | Streams continuous garbage data chunks to exhaust automated parsers. |
 | **8091** | `proxy` | Transparently reverse-proxies blocked probes to honeypot backend container. |
-| **8092** | `disable` | Flag verification: RouteWarden disabled, all requests pass through to upstream. |
+| **8092** | `enabled false` | RouteWarden disabled, all requests pass through to upstream. |
 | **8093** | `methods` | Verb filter verification: Only inspects `POST` & `DELETE`; `GET` bypasses filter. |
 | **8094** | `check_headers` | Header inspection: Blocks requests where `X-Forwarded-Uri` or `X-Rewrite-URL` header contains a sensitive path (e.g. `/.env`, `/.git`). |
 

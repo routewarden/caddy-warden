@@ -7,7 +7,7 @@ example.com {
         # Keep built-in rules active (.env, .git, database dumps, cloud credentials, etc.)
         
         # Block additional internal admin endpoints
-        path_patterns (?i)^/admin/(internal|metrics|debug)(/.*)?$
+        block_patterns (?i)^/admin/(internal|metrics|debug)(/.*)?$
 
         # Whitelist safe webhooks or health checks
         allow_patterns (?i)^/api/healthz$
@@ -21,7 +21,7 @@ example.com {
         # Standard JSON forbidden response
         response {
             mode json
-            status 403
+            status_code 403
             body "{\"error\":\"Forbidden\",\"message\":\"Access to sensitive endpoint is blocked\",\"status\":403}"
             header X-Warden-Shield Active
         }
