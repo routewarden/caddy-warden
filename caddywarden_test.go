@@ -980,7 +980,7 @@ func TestRouteWarden_LiveSamplesParitySuite(t *testing.T) {
 			t.Errorf("expected 200 for /api/healthz, got %d", recHealth.Code)
 		}
 
-		// Custom path_patterns: /admin/secret-keys
+		// Custom block_patterns: /admin/secret-keys
 		nextAdmin := &testHandler{}
 		reqAdmin := httptest.NewRequest(http.MethodGet, "/admin/secret-keys", nil)
 		recAdmin := httptest.NewRecorder()
