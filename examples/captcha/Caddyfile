@@ -7,7 +7,7 @@ example.com {
         # Challenge any bot probing sensitive assets with Cloudflare Turnstile
         response {
             mode captcha
-            status 403
+            status_code 403
             captcha turnstile 0x4AAAAAAACxxxxxxxxxxx "Security Verification"
             header X-Warden-Action Challenge
         }
