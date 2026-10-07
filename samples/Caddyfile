@@ -91,7 +91,7 @@
         response {
             mode rateLimitChallenge
             status_code 429
-            retry_after 180
+            retry_after_seconds 180
         }
     }
     respond "OK: Upstream Reached (8086)" 200

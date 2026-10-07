@@ -156,9 +156,9 @@ func TestCaddyfile_ComprehensiveDirectives(t *testing.T) {
 			redirect_url https://honeypot.internal/sink
 			proxy_url http://127.0.0.1:9999
 			gzip_bomb_mb 15
-			retry_after 120
+			retry_after_seconds 120
 			tarpit_delay_ms 500
-			tarpit_max_duration 45
+			tarpit_max_duration_seconds 45
 			stream_size_mb 50
 			header X-Warden-Shield Active
 			header X-Block-Reason SecurityPolicy
@@ -299,12 +299,12 @@ func TestCaddyfile_ParsingErrors(t *testing.T) {
 		{"empty proxy_url", "routewarden {\n response {\n proxy_url\n }\n}"},
 		{"empty gzip_bomb_mb", "routewarden {\n response {\n gzip_bomb_mb\n }\n}"},
 		{"invalid gzip_bomb_mb non-int", "routewarden {\n response {\n gzip_bomb_mb abc\n }\n}"},
-		{"empty retry_after", "routewarden {\n response {\n retry_after\n }\n}"},
-		{"invalid retry_after non-int", "routewarden {\n response {\n retry_after abc\n }\n}"},
+		{"empty retry_after_seconds", "routewarden {\n response {\n retry_after_seconds\n }\n}"},
+		{"invalid retry_after_seconds non-int", "routewarden {\n response {\n retry_after_seconds abc\n }\n}"},
 		{"empty tarpit_delay_ms", "routewarden {\n response {\n tarpit_delay_ms\n }\n}"},
 		{"invalid tarpit_delay_ms non-int", "routewarden {\n response {\n tarpit_delay_ms abc\n }\n}"},
-		{"empty tarpit_max_duration", "routewarden {\n response {\n tarpit_max_duration\n }\n}"},
-		{"invalid tarpit_max_duration non-int", "routewarden {\n response {\n tarpit_max_duration abc\n }\n}"},
+		{"empty tarpit_max_duration_seconds", "routewarden {\n response {\n tarpit_max_duration_seconds\n }\n}"},
+		{"invalid tarpit_max_duration_seconds non-int", "routewarden {\n response {\n tarpit_max_duration_seconds abc\n }\n}"},
 		{"empty stream_size_mb", "routewarden {\n response {\n stream_size_mb\n }\n}"},
 		{"invalid stream_size_mb non-int", "routewarden {\n response {\n stream_size_mb abc\n }\n}"},
 		{"missing header value", "routewarden {\n response {\n header X-Key\n }\n}"},
@@ -577,6 +577,8 @@ func TestCaddyfile_MethodsDirective(t *testing.T) {
 			"trusted_proxy 192.168.1.1",
 			"response {\n status 403\n}",
 			"response {\n action json\n}",
+			"response {\n retry_after 120\n}",
+			"response {\n tarpit_max_duration 45\n}",
 		}
 		for _, alias := range aliases {
 			snippet := fmt.Sprintf("routewarden {\n%s\n}", alias)

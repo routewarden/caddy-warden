@@ -203,13 +203,13 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 						}
 						rw.Response.GzipBombMB = mb
 
-					case "retry_after", "retry_after_seconds":
+					case "retry_after_seconds":
 						if !d.NextArg() {
 							return d.ArgErr()
 						}
 						sec, err := strconv.Atoi(d.Val())
 						if err != nil {
-							return d.Errf("invalid retry_after %s: %v", d.Val(), err)
+							return d.Errf("invalid retry_after_seconds %s: %v", d.Val(), err)
 						}
 						rw.Response.RetryAfterSeconds = sec
 
@@ -223,13 +223,13 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 						}
 						rw.Response.TarpitDelayMs = delay
 
-					case "tarpit_max_duration", "tarpit_max_duration_seconds":
+					case "tarpit_max_duration_seconds":
 						if !d.NextArg() {
 							return d.ArgErr()
 						}
 						dur, err := strconv.Atoi(d.Val())
 						if err != nil {
-							return d.Errf("invalid tarpit_max_duration %s: %v", d.Val(), err)
+							return d.Errf("invalid tarpit_max_duration_seconds %s: %v", d.Val(), err)
 						}
 						rw.Response.TarpitMaxDurationSeconds = dur
 

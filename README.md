@@ -247,9 +247,9 @@ routewarden {
         redirect_url <string>
         proxy_url <string>
         gzip_bomb_mb <int>
-        retry_after <int>
+        retry_after_seconds <int>
         tarpit_delay_ms <int>
-        tarpit_max_duration <int>
+        tarpit_max_duration_seconds <int>
         stream_size_mb <int>
         header <name> <value>
         captcha <provider> <site_key> [title]

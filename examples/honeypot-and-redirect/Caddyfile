@@ -33,7 +33,7 @@ ratelimit.example.com {
         response {
             mode rateLimitChallenge
             status_code 429
-            retry_after 300
+            retry_after_seconds 300
         }
     }
 

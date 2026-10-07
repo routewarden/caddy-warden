@@ -9,7 +9,7 @@ tarpit.example.com {
             mode tarpit
             status_code 200
             tarpit_delay_ms 1000
-            tarpit_max_duration 60
+            tarpit_max_duration_seconds 60
         }
     }
 
