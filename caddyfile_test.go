@@ -573,6 +573,10 @@ func TestCaddyfile_MethodsDirective(t *testing.T) {
 			"body_patterns (?i)secret",
 			"body_pattern (?i)secret",
 			"status 403",
+			"action json",
+			"trusted_proxy 192.168.1.1",
+			"response {\n status 403\n}",
+			"response {\n action json\n}",
 		}
 		for _, alias := range aliases {
 			snippet := fmt.Sprintf("routewarden {\n%s\n}", alias)
@@ -695,6 +699,53 @@ func TestCaddyfile_MultipleBlockAndAllowPatterns(t *testing.T) {
 	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
 	if err := rw.Provision(ctx); err != nil {
 		t.Fatalf("unexpected provision error: %v", err)
+	}
+}
+
+func TestCaddyfile_ResponseExtendedDirectives(t *testing.T) {
+	snippet := `routewarden {
+		response {
+			mode captcha
+			status_code 403
+			retry_after_seconds 240
+			tarpit_max_duration_seconds 90
+			captcha {
+				provider turnstile
+				site_key "0x4AAAAAAtestkey"
+				title "Security Verification"
+				template "<html><body>custom</body></html>"
+			}
+		}
+	}`
+	d := caddyfile.NewTestDispenser(snippet)
+	rw := &caddywarden.RouteWarden{}
+	if err := rw.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+
+	if rw.Response == nil {
+		t.Fatal("expected Response to be non-nil")
+	}
+	if rw.Response.RetryAfterSeconds != 240 {
+		t.Errorf("expected RetryAfterSeconds=240, got %d", rw.Response.RetryAfterSeconds)
+	}
+	if rw.Response.TarpitMaxDurationSeconds != 90 {
+		t.Errorf("expected TarpitMaxDurationSeconds=90, got %d", rw.Response.TarpitMaxDurationSeconds)
+	}
+	if rw.Response.Captcha == nil {
+		t.Fatal("expected Captcha to be non-nil")
+	}
+	if rw.Response.Captcha.Provider != "turnstile" {
+		t.Errorf("expected Provider='turnstile', got %q", rw.Response.Captcha.Provider)
+	}
+	if rw.Response.Captcha.SiteKey != "0x4AAAAAAtestkey" {
+		t.Errorf("expected SiteKey='0x4AAAAAAtestkey', got %q", rw.Response.Captcha.SiteKey)
+	}
+	if rw.Response.Captcha.Title != "Security Verification" {
+		t.Errorf("expected Title='Security Verification', got %q", rw.Response.Captcha.Title)
+	}
+	if rw.Response.Captcha.Template != "<html><body>custom</body></html>" {
+		t.Errorf("expected Template='<html><body>custom</body></html>', got %q", rw.Response.Captcha.Template)
 	}
 }
 

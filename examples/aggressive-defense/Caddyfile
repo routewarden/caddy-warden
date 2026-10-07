@@ -7,7 +7,7 @@ tarpit.example.com {
     routewarden {
         response {
             mode tarpit
-            status 200
+            status_code 200
             tarpit_delay_ms 1000
             tarpit_max_duration 60
         }
@@ -21,7 +21,7 @@ gzipbomb.example.com {
     routewarden {
         response {
             mode gzipBomb
-            status 200
+            status_code 200
             gzip_bomb_mb 10
         }
     }
@@ -34,7 +34,7 @@ stream.example.com {
     routewarden {
         response {
             mode infiniteStream
-            status 200
+            status_code 200
             stream_size_mb 50
         }
     }

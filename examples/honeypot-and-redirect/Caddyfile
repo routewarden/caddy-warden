@@ -7,7 +7,7 @@ deflect.example.com {
     routewarden {
         response {
             mode redirect
-            status 302
+            status_code 302
             redirect_url https://honeypot.security.internal/trap
         }
     }
@@ -32,7 +32,7 @@ ratelimit.example.com {
     routewarden {
         response {
             mode rateLimitChallenge
-            status 429
+            status_code 429
             retry_after 300
         }
     }

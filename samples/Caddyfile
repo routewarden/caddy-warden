@@ -78,7 +78,7 @@
     routewarden {
         response {
             mode redirect
-            status 302
+            status_code 302
             redirect_url https://honeypot.local/sinkhole
         }
     }
@@ -90,7 +90,7 @@
     routewarden {
         response {
             mode rateLimitChallenge
-            status 429
+            status_code 429
             retry_after 180
         }
     }
@@ -112,7 +112,7 @@
     routewarden {
         response {
             mode gzipBomb
-            status 200
+            status_code 200
             gzip_bomb_mb 1
         }
     }
@@ -134,7 +134,7 @@
     routewarden {
         response {
             mode infiniteStream
-            status 200
+            status_code 200
             stream_size_mb 2
         }
     }

@@ -203,7 +203,7 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 						}
 						rw.Response.GzipBombMB = mb
 
-					case "retry_after":
+					case "retry_after", "retry_after_seconds":
 						if !d.NextArg() {
 							return d.ArgErr()
 						}
@@ -223,7 +223,7 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 						}
 						rw.Response.TarpitDelayMs = delay
 
-					case "tarpit_max_duration":
+					case "tarpit_max_duration", "tarpit_max_duration_seconds":
 						if !d.NextArg() {
 							return d.ArgErr()
 						}
@@ -254,17 +254,48 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 						rw.Response.Headers[key] = val
 
 					case "captcha":
-						var provider, siteKey string
-						if !d.Args(&provider, &siteKey) {
-							return d.ArgErr()
-						}
 						if rw.Response.Captcha == nil {
 							rw.Response.Captcha = &CaptchaConfig{}
 						}
-						rw.Response.Captcha.Provider = provider
-						rw.Response.Captcha.SiteKey = siteKey
-						if d.NextArg() {
-							rw.Response.Captcha.Title = d.Val()
+						args := d.RemainingArgs()
+						if len(args) >= 2 {
+							rw.Response.Captcha.Provider = args[0]
+							rw.Response.Captcha.SiteKey = args[1]
+							if len(args) >= 3 {
+								rw.Response.Captcha.Title = args[2]
+							}
+						} else if len(args) == 0 {
+							for d.NextBlock(2) {
+								switch d.Val() {
+								case "provider":
+									if !d.NextArg() {
+										return d.ArgErr()
+									}
+									rw.Response.Captcha.Provider = d.Val()
+								case "site_key":
+									if !d.NextArg() {
+										return d.ArgErr()
+									}
+									rw.Response.Captcha.SiteKey = d.Val()
+								case "title":
+									if !d.NextArg() {
+										return d.ArgErr()
+									}
+									rw.Response.Captcha.Title = d.Val()
+								case "template":
+									if !d.NextArg() {
+										return d.ArgErr()
+									}
+									rw.Response.Captcha.Template = d.Val()
+								default:
+									return d.Errf("unrecognized captcha subdirective: %s", d.Val())
+								}
+							}
+							if rw.Response.Captcha.Provider == "" || rw.Response.Captcha.SiteKey == "" {
+								return d.Err("captcha requires both provider and site_key")
+							}
+						} else {
+							return d.ArgErr()
 						}
 
 					default:
