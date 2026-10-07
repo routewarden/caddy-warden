@@ -156,7 +156,7 @@ Add `order routewarden first` to your global options block, then configure `rout
 example.com {
     routewarden {
         # Custom regex patterns you want to block
-        path_patterns (?i)^/admin/(secrets|internal)(/.*)?$
+        block_patterns (?i)^/admin/(secrets|internal)(/.*)?$
 
         # Patterns that should always be allowed
         allow_patterns (?i)^/api/internal/health$
@@ -218,7 +218,7 @@ routewarden {
     check_body_max_bytes 65536
 
     # Specific regex patterns to match against the request body
-    body_patterns <regex...>
+    check_body_patterns <regex...>
 
     # Enable verbose debug logs (evaluations, candidate paths, IP matching)
     debug
@@ -227,7 +227,7 @@ routewarden {
     security_log
 
     # Custom regex patterns to block
-    path_patterns <regex...>
+    block_patterns <regex...>
 
     # Custom regex patterns to allow
     allow_patterns <regex...>

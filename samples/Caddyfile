@@ -9,7 +9,7 @@
         debug
         security_log
         check_query
-        path_patterns (?i)^/admin/secret.*$
+        block_patterns (?i)^/admin/secret.*$
         allow_patterns (?i)^/api/healthz$
         allowed_ips 192.168.100.50 10.99.0.0/16
         methods GET POST
@@ -155,7 +155,7 @@
 # 13. Port 8092: Disabled flag test (disable)
 :8092 {
     routewarden {
-        disable
+        enabled false
     }
     respond "OK: RouteWarden Disabled - Upstream Reached (8092)" 200
 }
