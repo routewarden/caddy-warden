@@ -1744,3 +1744,181 @@ func TestRouteWarden_ServeHTTP_BodyTruncation(t *testing.T) {
 		t.Errorf("expected downstream to read full payload, got %q", downstreamRead)
 	}
 }
+
+func TestRouteWarden_AllowAndBlockPatterns_Comprehensive(t *testing.T) {
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	rw := &caddywarden.RouteWarden{
+		Enabled:                    true,
+		EnableDefaultPatterns:      true,
+		EnableDefaultAllowPatterns: true,
+		BlockPatterns: []string{
+			`(?i)^/admin/.*$`,
+			`(?i)\.(key|pem|conf|secret)$`,
+			`(?i)^/internal/metrics$`,
+		},
+		AllowPatterns: []string{
+			`(?i)^/admin/public/health$`,
+			`(?i)^/admin/assets/.*$`,
+			`(?i)^/public/sample\.conf$`,
+			`(?i)^/\.well-known/acme-challenge/.*$`,
+		},
+		AllowedIPs: []string{"192.168.100.50"},
+		CheckQuery: true,
+	}
+
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("unexpected provision error: %v", err)
+	}
+
+	downstream := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("passed-downstream"))
+		return nil
+	})
+
+	tests := []struct {
+		name       string
+		method     string
+		url        string
+		clientIP   string
+		expectCode int
+		reason     string
+	}{
+		// BlockPatterns matches
+		{
+			name:       "Block pattern: /admin/dashboard blocked",
+			method:     http.MethodGet,
+			url:        "/admin/dashboard",
+			expectCode: http.StatusForbidden,
+			reason:     "matches BlockPatterns ^/admin/.*$",
+		},
+		{
+			name:       "Block pattern: case insensitive /ADMIN/Settings blocked",
+			method:     http.MethodGet,
+			url:        "/ADMIN/Settings",
+			expectCode: http.StatusForbidden,
+			reason:     "matches BlockPatterns case-insensitively",
+		},
+		{
+			name:       "Block pattern: file extension /certs/server.key blocked",
+			method:     http.MethodGet,
+			url:        "/certs/server.key",
+			expectCode: http.StatusForbidden,
+			reason:     "matches BlockPatterns \\.(key|pem|conf|secret)$",
+		},
+		{
+			name:       "Block pattern: file extension /config/app.conf blocked",
+			method:     http.MethodGet,
+			url:        "/config/app.conf",
+			expectCode: http.StatusForbidden,
+			reason:     "matches BlockPatterns \\.(key|pem|conf|secret)$",
+		},
+		{
+			name:       "Block pattern: exact endpoint /internal/metrics blocked",
+			method:     http.MethodGet,
+			url:        "/internal/metrics",
+			expectCode: http.StatusForbidden,
+			reason:     "matches BlockPatterns ^/internal/metrics$",
+		},
+		// AllowPatterns overriding BlockPatterns
+		{
+			name:       "Allow pattern override: /admin/public/health passes",
+			method:     http.MethodGet,
+			url:        "/admin/public/health",
+			expectCode: http.StatusOK,
+			reason:     "matches AllowPatterns ^/admin/public/health$",
+		},
+		{
+			name:       "Allow pattern override: /admin/assets/app.js passes",
+			method:     http.MethodGet,
+			url:        "/admin/assets/app.js",
+			expectCode: http.StatusOK,
+			reason:     "matches AllowPatterns ^/admin/assets/.*$",
+		},
+		{
+			name:       "Allow pattern override: /public/sample.conf passes despite .conf extension",
+			method:     http.MethodGet,
+			url:        "/public/sample.conf",
+			expectCode: http.StatusOK,
+			reason:     "matches AllowPatterns ^/public/sample\\.conf$",
+		},
+		{
+			name:       "Allow pattern override on default block: /.well-known/acme-challenge/token passes",
+			method:     http.MethodGet,
+			url:        "/.well-known/acme-challenge/abc-token",
+			expectCode: http.StatusOK,
+			reason:     "matches AllowPatterns for acme challenge",
+		},
+		// Default block pattern still active
+		{
+			name:       "Default block pattern: /.env blocked",
+			method:     http.MethodGet,
+			url:        "/.env",
+			expectCode: http.StatusForbidden,
+			reason:     "default block patterns active",
+		},
+		// Non-matching clean routes
+		{
+			name:       "Clean route: /api/v1/products passes",
+			method:     http.MethodGet,
+			url:        "/api/v1/products",
+			expectCode: http.StatusOK,
+			reason:     "not matched by any block pattern",
+		},
+		{
+			name:       "Clean route: /internal/metrics/public passes (not exact /internal/metrics)",
+			method:     http.MethodGet,
+			url:        "/internal/metrics/public",
+			expectCode: http.StatusOK,
+			reason:     "does not match exact ^/internal/metrics$",
+		},
+		// IP Whitelist bypass for blocked paths
+		{
+			name:       "IP Whitelist bypass: /admin/dashboard allowed from whitelisted IP",
+			method:     http.MethodGet,
+			url:        "/admin/dashboard",
+			clientIP:   "192.168.100.50",
+			expectCode: http.StatusOK,
+			reason:     "allowedIps bypasses block patterns",
+		},
+		{
+			name:       "Non-whitelisted IP blocked on /admin/dashboard",
+			method:     http.MethodGet,
+			url:        "/admin/dashboard",
+			clientIP:   "10.0.0.1",
+			expectCode: http.StatusForbidden,
+			reason:     "non-whitelisted IP is blocked",
+		},
+		// CheckQuery inspection with BlockPatterns
+		{
+			name:       "Query string matching BlockPatterns is blocked",
+			method:     http.MethodGet,
+			url:        "/search?redirect=/admin/dashboard",
+			expectCode: http.StatusForbidden,
+			reason:     "query parameter matches BlockPatterns",
+		},
+		{
+			name:       "Query string not matching BlockPatterns passes",
+			method:     http.MethodGet,
+			url:        "/search?q=normal-search-term",
+			expectCode: http.StatusOK,
+			reason:     "clean query parameter passes",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.url, nil)
+			if tc.clientIP != "" {
+				req.RemoteAddr = tc.clientIP + ":12345"
+			}
+			rec := httptest.NewRecorder()
+			if err := rw.ServeHTTP(rec, req, downstream); err != nil {
+				t.Fatalf("unexpected ServeHTTP error: %v", err)
+			}
+			if rec.Code != tc.expectCode {
+				t.Errorf("[%s] expected status %d, got %d (%s)", tc.name, tc.expectCode, rec.Code, tc.reason)
+			}
+		})
+	}
+}

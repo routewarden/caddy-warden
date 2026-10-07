@@ -655,4 +655,53 @@ func TestCaddyfile_MethodsDirective(t *testing.T) {
 	})
 }
 
+func TestCaddyfile_MultipleBlockAndAllowPatterns(t *testing.T) {
+	snippet := `routewarden {
+		enabled true
+		block_patterns (?i)^/admin/.*$ (?i)\.(key|pem)$
+		block_patterns (?i)^/internal/metrics$
+		allow_patterns (?i)^/admin/health$ (?i)^/admin/assets/.*$
+		allow_patterns (?i)^/public/.*$
+	}`
+	d := caddyfile.NewTestDispenser(snippet)
+	rw := &caddywarden.RouteWarden{}
+	if err := rw.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+
+	expectedBlocks := []string{
+		`(?i)^/admin/.*$`,
+		`(?i)\.(key|pem)$`,
+		`(?i)^/internal/metrics$`,
+	}
+	if len(rw.BlockPatterns) != len(expectedBlocks) {
+		t.Fatalf("expected %d BlockPatterns, got %d: %v", len(expectedBlocks), len(rw.BlockPatterns), rw.BlockPatterns)
+	}
+	for i, exp := range expectedBlocks {
+		if rw.BlockPatterns[i] != exp {
+			t.Errorf("BlockPatterns[%d] expected %q, got %q", i, exp, rw.BlockPatterns[i])
+		}
+	}
+
+	expectedAllows := []string{
+		`(?i)^/admin/health$`,
+		`(?i)^/admin/assets/.*$`,
+		`(?i)^/public/.*$`,
+	}
+	if len(rw.AllowPatterns) != len(expectedAllows) {
+		t.Fatalf("expected %d AllowPatterns, got %d: %v", len(expectedAllows), len(rw.AllowPatterns), rw.AllowPatterns)
+	}
+	for i, exp := range expectedAllows {
+		if rw.AllowPatterns[i] != exp {
+			t.Errorf("AllowPatterns[%d] expected %q, got %q", i, exp, rw.AllowPatterns[i])
+		}
+	}
+
+	// Verify provisioning compiles the regexes without error
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("unexpected provision error: %v", err)
+	}
+}
+
 
