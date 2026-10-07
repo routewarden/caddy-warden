@@ -291,8 +291,7 @@ func TestCaddyfile_ParsingErrors(t *testing.T) {
 		{"unknown routewarden directive", "routewarden {\n unknown_directive\n}"},
 		{"empty response mode", "routewarden {\n response {\n mode\n }\n}"},
 		{"empty response status_code", "routewarden {\n response {\n status_code\n }\n}"},
-		{"empty response status (alias)", "routewarden {\n response {\n status\n }\n}"},
-		{"invalid response status non-int", "routewarden {\n response {\n status abc\n }\n}"},
+		{"unrecognized response status (must use status_code)", "routewarden {\n response {\n status 403\n }\n}"},
 		{"invalid response status_code non-int", "routewarden {\n response {\n status_code abc\n }\n}"},
 		{"empty content_type", "routewarden {\n response {\n content_type\n }\n}"},
 		{"empty body", "routewarden {\n response {\n body\n }\n}"},
@@ -325,30 +324,24 @@ func TestCaddyfile_ParsingErrors(t *testing.T) {
 	}
 }
 
-
-
-func TestCaddyfile_StatusAlias(t *testing.T) {
-	// "status" must be accepted as an alias for "status_code" inside the response block.
-	// This was the root cause of block_patterns appearing to have no effect:
-	// every example Caddyfile used "status", which triggered an unrecognized-subdirective
-	// error causing the entire routewarden block to fail provisioning.
+func TestCaddyfile_StatusCodeCanonical(t *testing.T) {
 	input := `routewarden {
 		block_patterns (?i)^/secret$
 		response {
 			mode json
-			status 404
+			status_code 404
 		}
 	}`
 	d := caddyfile.NewTestDispenser(input)
 	rw := &caddywarden.RouteWarden{}
 	if err := rw.UnmarshalCaddyfile(d); err != nil {
-		t.Fatalf("status alias: unexpected unmarshal error: %v", err)
+		t.Fatalf("unexpected unmarshal error: %v", err)
 	}
 	if rw.Response == nil {
-		t.Fatal("status alias: Response is nil")
+		t.Fatal("Response is nil")
 	}
 	if rw.Response.StatusCode != 404 {
-		t.Errorf("status alias: expected StatusCode 404, got %d", rw.Response.StatusCode)
+		t.Errorf("expected StatusCode 404, got %d", rw.Response.StatusCode)
 	}
 }
 
@@ -579,6 +572,7 @@ func TestCaddyfile_MethodsDirective(t *testing.T) {
 			"path_patterns (?i)^/p$",
 			"body_patterns (?i)secret",
 			"body_pattern (?i)secret",
+			"status 403",
 		}
 		for _, alias := range aliases {
 			snippet := fmt.Sprintf("routewarden {\n%s\n}", alias)

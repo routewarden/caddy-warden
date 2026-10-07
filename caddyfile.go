@@ -129,7 +129,7 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 				rw.Response.Mode = val
 
-			case "status_code", "status":
+			case "status_code":
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
@@ -159,7 +159,7 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 						}
 						rw.Response.Mode = val
 
-					case "status_code", "status":
+					case "status_code":
 						if !d.NextArg() {
 							return d.ArgErr()
 						}

@@ -170,7 +170,7 @@ example.com {
         # What to return when a request is blocked
         response {
             mode json
-            status 403
+            status_code 403
             body "{\"error\":\"Forbidden\",\"message\":\"Access to sensitive endpoint is blocked\"}"
         }
     }
@@ -241,7 +241,7 @@ routewarden {
     # Response behavior
     response {
         mode <json|html|text|captcha|redirect|silentDrop|gzipBomb|tarpit|fakeSuccess|rateLimitChallenge|proxy|infiniteStream|xml>
-        status <int>
+        status_code <int>
         content_type <string>
         body <string>
         redirect_url <string>

@@ -15,7 +15,7 @@
         methods GET POST
         response {
             mode json
-            status 403
+            status_code 403
             header X-RouteWarden-Protection Active
             body "{\"error\":\"Access Denied\",\"security\":\"routewarden\"}"
         }
@@ -28,7 +28,7 @@
     routewarden {
         response {
             mode html
-            status 403
+            status_code 403
             header X-RouteWarden-Mode html
             body "<html><body><h1>Access Denied by RouteWarden</h1></body></html>"
         }
@@ -41,7 +41,7 @@
     routewarden {
         response {
             mode text
-            status 403
+            status_code 403
             header X-RouteWarden-Mode text
             body "Access Forbidden: RouteWarden Text Mode"
         }
@@ -54,7 +54,7 @@
     routewarden {
         response {
             mode xml
-            status 403
+            status_code 403
             header X-RouteWarden-Mode xml
         }
     }
@@ -66,7 +66,7 @@
     routewarden {
         response {
             mode captcha
-            status 403
+            status_code 403
             captcha turnstile 0x4AAAAAAtestkey "Security Verification Challenge"
         }
     }
@@ -166,7 +166,7 @@
         methods POST DELETE
         response {
             mode json
-            status 403
+            status_code 403
         }
     }
     respond "OK: Upstream Reached (8093)" 200
@@ -178,7 +178,7 @@
         check_headers X-Forwarded-Uri X-Rewrite-URL
         response {
             mode json
-            status 403
+            status_code 403
             body "{\"error\":\"Blocked\",\"reason\":\"Sensitive path detected in forwarded header\"}"
         }
     }
