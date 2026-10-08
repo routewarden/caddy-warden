@@ -146,11 +146,11 @@ func main() {
 
 ## Quickstart
 
-Add `order routewarden first` to your global options block, then configure `routewarden` inside your site definition:
+Add `order routewarden first` (or `order routewarden before reverse_proxy`) to your global options block, then configure `routewarden` inside your site definition:
 
 ```caddyfile
 {
-    order routewarden first
+    order routewarden before reverse_proxy
 }
 
 example.com {
@@ -164,8 +164,8 @@ example.com {
         # Whitelist trusted IP addresses or subnets (e.g., office VPN)
         allowed_ips 10.0.0.0/8 192.168.1.100
 
-        # HTTP methods to inspect (defaults to GET)
-        methods GET POST
+        # HTTP methods to inspect (defaults to GET if omitted; specify to protect POST/PUT/DELETE APIs)
+        methods GET POST PUT DELETE
 
         # What to return when a request is blocked
         response {
@@ -178,6 +178,8 @@ example.com {
     reverse_proxy localhost:8080
 }
 ```
+
+> **Note on Directive Ordering**: Caddy requires custom directives to have an established order relative to other HTTP handlers. Without `order routewarden ...` in global options, Caddy will report: `directive 'routewarden' is not an ordered HTTP handler`. Alternatively, encapsulate both directives within a `route { routewarden { ... } reverse_proxy ... }` block.
 
 ---
 
@@ -256,6 +258,10 @@ routewarden {
     }
 }
 ```
+
+> **Important Notes**:
+> - **HTTP Methods**: RouteWarden defaults to inspecting `GET` requests only. If you are blocking API endpoints (such as `POST /api/auth/login`), make sure to declare `methods GET POST PUT DELETE...`.
+> - **`silentDrop` Behind Edge Proxies**: In `silentDrop` mode, RouteWarden terminates the TCP connection without sending an HTTP status line. If Caddy is deployed behind Cloudflare, AWS ALB, or an edge proxy, the upstream proxy will detect a dropped connection and display a **502 Bad Gateway** error to the client. Use `mode json` or `mode html` with status `403` or `404` for clean error responses behind proxies.
 
 ---
 
