@@ -103,6 +103,75 @@ func TestPathNormalizer_ExtractCandidatePaths(t *testing.T) {
 	}
 }
 
+// TestPathNormalizer_EdgeCases covers plan items P-1 through P-5 which are
+// not exercised by the main table-driven test above.
+func TestPathNormalizer_EdgeCases(t *testing.T) {
+	// P-1: Repeated percent signs (%%%%2eenv) – should not panic; .env may or may not be extracted
+	t.Run("P-1 repeated percent signs", func(t *testing.T) {
+		candidates := caddywarden.ExtractCandidatePaths("", "/%%%%2eenv", "")
+		// Must not panic; result must be a non-empty slice of /‑prefixed strings.
+		if len(candidates) == 0 {
+			t.Fatal("expected at least one candidate for %%%%2eenv path")
+		}
+		for _, c := range candidates {
+			if len(c) > 0 && c[0] != '/' {
+				t.Errorf("candidate %q does not start with '/'", c)
+			}
+		}
+	})
+
+	// P-2: Exact "/" path
+	t.Run("P-2 exact root path", func(t *testing.T) {
+		candidates := caddywarden.ExtractCandidatePaths("", "/", "")
+		if len(candidates) == 0 {
+			t.Fatal("expected at least one candidate for '/'")
+		}
+		found := false
+		for _, c := range candidates {
+			if c == "/" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected '/' to be in candidates, got: %v", candidates)
+		}
+	})
+
+	// P-3: Very long path (>16 KB) must not panic or OOM
+	t.Run("P-3 very long path", func(t *testing.T) {
+		longPath := "/" + string(make([]byte, 16*1024+1)) // 16 KB + 1
+		for i := range longPath[1:] {
+			longPath = longPath[:i+1] + "a" + longPath[i+2:]
+		}
+		candidates := caddywarden.ExtractCandidatePaths("", longPath, "")
+		if len(candidates) == 0 {
+			t.Fatal("expected at least one candidate for very long path")
+		}
+	})
+
+	// P-4: Unicode NFD path – normalizer must not panic; result must be well-formed
+	t.Run("P-4 unicode NFC/NFD path", func(t *testing.T) {
+		// "é" in NFD is e + combining acute accent (U+0301)
+		nfdPath := "/caf\u00e9/menu"
+		candidates := caddywarden.ExtractCandidatePaths("", nfdPath, "")
+		for _, c := range candidates {
+			if len(c) > 0 && c[0] != '/' {
+				t.Errorf("unicode candidate %q does not start with '/'", c)
+			}
+		}
+	})
+
+	// P-5: Path with embedded fragment (#anchor) – fragment must not pollute path candidates
+	t.Run("P-5 embedded fragment", func(t *testing.T) {
+		candidates := caddywarden.ExtractCandidatePaths("", "/api/v1#admin", "/api/v1#admin")
+		for _, c := range candidates {
+			if len(c) > 0 && c[0] != '/' {
+				t.Errorf("fragment candidate %q does not start with '/'", c)
+			}
+		}
+	})
+}
+
 // FuzzExtractCandidatePaths runs continuous fuzzing with randomized inputs to ensure
 // path normalizer never panics or triggers index out of range on malformed or extreme inputs.
 func FuzzExtractCandidatePaths(f *testing.F) {

@@ -54,7 +54,7 @@ Then build Caddy with RouteWarden:
 ```bash
 # Pin to a specific version (recommended for production)
 xcaddy build \
-    --with github.com/routewarden/caddy-warden@v1.4.1
+    --with github.com/routewarden/caddy-warden@v1.5.0
 
 # Or build using the latest version
 xcaddy build \
@@ -79,7 +79,7 @@ Use Caddy's official multi-stage builder to create your image:
 FROM caddy:2.9-builder AS builder
 
 RUN xcaddy build \
-    --with github.com/routewarden/caddy-warden@v1.4.1
+    --with github.com/routewarden/caddy-warden@v1.5.0
 
 FROM caddy:2.9-alpine
 
@@ -125,7 +125,7 @@ volumes:
 If you build your own Caddy binary in Go, import RouteWarden for automatic registration:
 
 ```bash
-go get github.com/routewarden/caddy-warden@v1.4.1
+go get github.com/routewarden/caddy-warden@v1.5.0
 ```
 
 ```go
@@ -146,11 +146,11 @@ func main() {
 
 ## Quickstart
 
-Add `order routewarden first` to your global options block, then configure `routewarden` inside your site definition:
+Add `order routewarden first` (or `order routewarden before reverse_proxy`) to your global options block, then configure `routewarden` inside your site definition:
 
 ```caddyfile
 {
-    order routewarden first
+    order routewarden before reverse_proxy
 }
 
 example.com {
@@ -164,8 +164,8 @@ example.com {
         # Whitelist trusted IP addresses or subnets (e.g., office VPN)
         allowed_ips 10.0.0.0/8 192.168.1.100
 
-        # HTTP methods to inspect (defaults to GET)
-        methods GET POST
+        # HTTP methods to inspect (defaults to GET if omitted; specify to protect POST/PUT/DELETE APIs)
+        methods GET POST PUT DELETE
 
         # What to return when a request is blocked
         response {
@@ -178,6 +178,8 @@ example.com {
     reverse_proxy localhost:8080
 }
 ```
+
+> **Note on Directive Ordering**: Caddy requires custom directives to have an established order relative to other HTTP handlers. Without `order routewarden ...` in global options, Caddy will report: `directive 'routewarden' is not an ordered HTTP handler`. Alternatively, encapsulate both directives within a `route { routewarden { ... } reverse_proxy ... }` block.
 
 ---
 
@@ -199,6 +201,9 @@ example.com {
 
 ```caddyfile
 routewarden {
+    # Optional path to shared routewarden.json base configuration file
+    config_file /etc/routewarden/routewarden.json
+
     # Enable or disable RouteWarden for this site
     enabled true
 
@@ -256,6 +261,10 @@ routewarden {
     }
 }
 ```
+
+> **Important Notes**:
+> - **HTTP Methods**: RouteWarden defaults to inspecting `GET` requests only. If you are blocking API endpoints (such as `POST /api/auth/login`), make sure to declare `methods GET POST PUT DELETE...`.
+> - **`silentDrop` Behind Edge Proxies**: In `silentDrop` mode, RouteWarden terminates the TCP connection without sending an HTTP status line. If Caddy is deployed behind Cloudflare, AWS ALB, or an edge proxy, the upstream proxy will detect a dropped connection and display a **502 Bad Gateway** error to the client. Use `mode json` or `mode html` with status `403` or `404` for clean error responses behind proxies.
 
 ---
 
