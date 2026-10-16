@@ -53,6 +53,10 @@ func (RouteWardenSnakeCase) CaddyModule() caddy.ModuleInfo {
 // RouteWarden is a Caddy v2 HTTP middleware module that blocks reconnaissance
 // scans, sensitive file exposure, and path-evasion attacks.
 type RouteWarden struct {
+	// ConfigFile is an optional path to a routewarden.json file that provides base
+	// configuration. Inline Caddyfile/JSON fields take precedence over any values
+	// set in the file, allowing per-site overrides on top of a shared config.
+	ConfigFile                 string          `json:"config_file,omitempty"`
 	Enabled                    bool            `json:"enabled"`
 	EnableDefaultPatterns      bool            `json:"enable_default_patterns"`
 	EnableDefaultAllowPatterns bool            `json:"enable_default_allow_patterns"`
@@ -101,6 +105,201 @@ func (RouteWarden) CaddyModule() caddy.ModuleInfo {
 // Provision sets up the module and pre-compiles regexes and IP filters.
 func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 	rw.logger = ctx.Logger(rw)
+
+	// If config_file is set, load it as the base and re-apply any inline values on top.
+	// This lets operators keep a shared routewarden.json and override individual
+	// fields (e.g. mode, allowed_ips) per site inside the Caddyfile.
+	if rw.ConfigFile != "" {
+		fileData, err := os.ReadFile(rw.ConfigFile)
+		if err != nil {
+			return fmt.Errorf("routewarden: cannot read config_file %q: %w", rw.ConfigFile, err)
+		}
+
+		type sharedConfigFile struct {
+			Enabled                         *bool           `json:"enabled"`
+			EnableDefaultPatterns           *bool           `json:"enableDefaultPatterns"`
+			EnableDefaultPatternsSnake      *bool           `json:"enable_default_patterns"`
+			EnableDefaultAllowPatterns      *bool           `json:"enableDefaultAllowPatterns"`
+			EnableDefaultAllowPatternsSnake *bool           `json:"enable_default_allow_patterns"`
+			BlockPatterns                   []string        `json:"blockPatterns"`
+			BlockPatternsSnake              []string        `json:"block_patterns"`
+			AllowPatterns                   []string        `json:"allowPatterns"`
+			AllowPatternsSnake              []string        `json:"allow_patterns"`
+			AllowedIPs                      []string        `json:"allowedIps"`
+			AllowedIPsSnake                 []string        `json:"allowed_ips"`
+			TrustedProxies                  []string        `json:"trustedProxies"`
+			TrustedProxiesSnake             []string        `json:"trusted_proxies"`
+			Methods                         []string        `json:"methods"`
+			CheckQuery                      *bool           `json:"checkQuery"`
+			CheckQuerySnake                 *bool           `json:"check_query"`
+			CheckHeaders                    []string        `json:"checkHeaders"`
+			CheckHeadersSnake               []string        `json:"check_headers"`
+			CheckBody                       *bool           `json:"checkBody"`
+			CheckBodySnake                  *bool           `json:"check_body"`
+			CheckBodyMaxBytes               *int64          `json:"checkBodyMaxBytes"`
+			CheckBodyMaxBytesSnake          *int64          `json:"check_body_max_bytes"`
+			CheckBodyPatterns               []string        `json:"checkBodyPatterns"`
+			CheckBodyPatternsSnake          []string        `json:"check_body_patterns"`
+			StatusCode                      *int            `json:"statusCode"`
+			StatusCodeSnake                 *int            `json:"status_code"`
+			CustomResponseText              *string         `json:"customResponseText"`
+			CustomResponseTextSnake         *string         `json:"custom_response_text"`
+			Mode                            *string         `json:"mode"`
+			Debug                           *bool           `json:"debug"`
+			SecurityLog                     *bool           `json:"securityLog"`
+			SecurityLogSnake                *bool           `json:"security_log"`
+			Response                        *ResponseConfig `json:"response"`
+		}
+
+		var scf sharedConfigFile
+		if err := json.Unmarshal(fileData, &scf); err != nil {
+			return fmt.Errorf("routewarden: cannot parse config_file %q: %w", rw.ConfigFile, err)
+		}
+
+		fileCfg := RouteWarden{
+			Enabled:                    true,
+			EnableDefaultPatterns:      true,
+			EnableDefaultAllowPatterns: true,
+			Methods:                    []string{"GET"},
+			Response:                   DefaultResponseConfig(),
+		}
+
+		if scf.Enabled != nil {
+			fileCfg.Enabled = *scf.Enabled
+		}
+		if scf.EnableDefaultPatterns != nil {
+			fileCfg.EnableDefaultPatterns = *scf.EnableDefaultPatterns
+		} else if scf.EnableDefaultPatternsSnake != nil {
+			fileCfg.EnableDefaultPatterns = *scf.EnableDefaultPatternsSnake
+		}
+		if scf.EnableDefaultAllowPatterns != nil {
+			fileCfg.EnableDefaultAllowPatterns = *scf.EnableDefaultAllowPatterns
+		} else if scf.EnableDefaultAllowPatternsSnake != nil {
+			fileCfg.EnableDefaultAllowPatterns = *scf.EnableDefaultAllowPatternsSnake
+		}
+		if len(scf.BlockPatterns) > 0 {
+			fileCfg.BlockPatterns = scf.BlockPatterns
+		} else if len(scf.BlockPatternsSnake) > 0 {
+			fileCfg.BlockPatterns = scf.BlockPatternsSnake
+		}
+		if len(scf.AllowPatterns) > 0 {
+			fileCfg.AllowPatterns = scf.AllowPatterns
+		} else if len(scf.AllowPatternsSnake) > 0 {
+			fileCfg.AllowPatterns = scf.AllowPatternsSnake
+		}
+		if len(scf.AllowedIPs) > 0 {
+			fileCfg.AllowedIPs = scf.AllowedIPs
+		} else if len(scf.AllowedIPsSnake) > 0 {
+			fileCfg.AllowedIPs = scf.AllowedIPsSnake
+		}
+		if len(scf.TrustedProxies) > 0 {
+			fileCfg.TrustedProxies = scf.TrustedProxies
+		} else if len(scf.TrustedProxiesSnake) > 0 {
+			fileCfg.TrustedProxies = scf.TrustedProxiesSnake
+		}
+		if len(scf.Methods) > 0 {
+			fileCfg.Methods = scf.Methods
+		}
+		if scf.CheckQuery != nil {
+			fileCfg.CheckQuery = *scf.CheckQuery
+		} else if scf.CheckQuerySnake != nil {
+			fileCfg.CheckQuery = *scf.CheckQuerySnake
+		}
+		if len(scf.CheckHeaders) > 0 {
+			fileCfg.CheckHeaders = scf.CheckHeaders
+		} else if len(scf.CheckHeadersSnake) > 0 {
+			fileCfg.CheckHeaders = scf.CheckHeadersSnake
+		}
+		if scf.CheckBody != nil {
+			fileCfg.CheckBody = *scf.CheckBody
+		} else if scf.CheckBodySnake != nil {
+			fileCfg.CheckBody = *scf.CheckBodySnake
+		}
+		if scf.CheckBodyMaxBytes != nil {
+			fileCfg.CheckBodyMaxBytes = *scf.CheckBodyMaxBytes
+		} else if scf.CheckBodyMaxBytesSnake != nil {
+			fileCfg.CheckBodyMaxBytes = *scf.CheckBodyMaxBytesSnake
+		}
+		if len(scf.CheckBodyPatterns) > 0 {
+			fileCfg.CheckBodyPatterns = scf.CheckBodyPatterns
+		} else if len(scf.CheckBodyPatternsSnake) > 0 {
+			fileCfg.CheckBodyPatterns = scf.CheckBodyPatternsSnake
+		}
+		if scf.StatusCode != nil {
+			fileCfg.StatusCode = *scf.StatusCode
+		} else if scf.StatusCodeSnake != nil {
+			fileCfg.StatusCode = *scf.StatusCodeSnake
+		}
+		if scf.CustomResponseText != nil {
+			fileCfg.CustomResponseText = *scf.CustomResponseText
+		} else if scf.CustomResponseTextSnake != nil {
+			fileCfg.CustomResponseText = *scf.CustomResponseTextSnake
+		}
+		if scf.Mode != nil {
+			fileCfg.Mode = *scf.Mode
+		}
+		if scf.Debug != nil {
+			fileCfg.Debug = *scf.Debug
+		}
+		if scf.SecurityLog != nil {
+			fileCfg.SecurityLog = *scf.SecurityLog
+		} else if scf.SecurityLogSnake != nil {
+			fileCfg.SecurityLog = *scf.SecurityLogSnake
+		}
+		if scf.Response != nil {
+			fileCfg.Response = scf.Response
+		}
+
+		// Apply inline overrides: any explicitly configured inline property wins
+		if len(rw.BlockPatterns) > 0 {
+			fileCfg.BlockPatterns = rw.BlockPatterns
+		}
+		if len(rw.AllowPatterns) > 0 {
+			fileCfg.AllowPatterns = rw.AllowPatterns
+		}
+		if len(rw.AllowedIPs) > 0 {
+			fileCfg.AllowedIPs = rw.AllowedIPs
+		}
+		if len(rw.TrustedProxies) > 0 {
+			fileCfg.TrustedProxies = rw.TrustedProxies
+		}
+		if len(rw.Methods) > 0 {
+			fileCfg.Methods = rw.Methods
+		}
+		if len(rw.CheckHeaders) > 0 {
+			fileCfg.CheckHeaders = rw.CheckHeaders
+		}
+		if len(rw.CheckBodyPatterns) > 0 {
+			fileCfg.CheckBodyPatterns = rw.CheckBodyPatterns
+		}
+		if rw.CheckBodyMaxBytes > 0 {
+			fileCfg.CheckBodyMaxBytes = rw.CheckBodyMaxBytes
+		}
+		if rw.StatusCode > 0 {
+			fileCfg.StatusCode = rw.StatusCode
+		}
+		if rw.CustomResponseText != "" {
+			fileCfg.CustomResponseText = rw.CustomResponseText
+		}
+		if rw.Mode != "" {
+			fileCfg.Mode = rw.Mode
+		}
+		if rw.Response != nil {
+			fileCfg.Response = rw.Response
+		}
+		if rw.CheckQuery {
+			fileCfg.CheckQuery = true
+		}
+		if rw.CheckBody {
+			fileCfg.CheckBody = true
+		}
+		if rw.Debug {
+			fileCfg.Debug = true
+		}
+
+		fileCfg.ConfigFile = rw.ConfigFile
+		*rw = fileCfg
+	}
 
 	if rw.Response == nil {
 		rw.Response = DefaultResponseConfig()
