@@ -46,6 +46,12 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		for d.NextBlock(0) {
 			switch d.Val() {
+			case "config_file":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				rw.ConfigFile = d.Val()
+
 			case "enabled":
 				rw.Enabled = parseBoolArg(d, true)
 
