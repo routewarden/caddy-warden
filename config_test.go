@@ -221,6 +221,50 @@ func TestConfigFile_ZeroByteFile(t *testing.T) {
 	}
 }
 
+// CF-10: Snake_case response fields parsed correctly from ConfigFile
+func TestConfigFile_SnakeCaseResponseConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgFile := filepath.Join(tmpDir, "snake_resp.json")
+	jsonContent := `{
+		"status_code": 404,
+		"methods": ["GET", "POST"],
+		"security_log": false,
+		"response": {
+			"mode": "redirect",
+			"status_code": 301,
+			"redirect_url": "https://example.com/blocked",
+			"content_type": "text/html"
+		}
+	}`
+	if err := os.WriteFile(cfgFile, []byte(jsonContent), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	rw := &caddywarden.RouteWarden{
+		ConfigFile: cfgFile,
+	}
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("unexpected provision error: %v", err)
+	}
+
+	if rw.StatusCode != 404 {
+		t.Errorf("expected StatusCode 404, got %d", rw.StatusCode)
+	}
+	if rw.Response == nil {
+		t.Fatal("expected Response to be non-nil")
+	}
+	if rw.Response.StatusCode != 301 {
+		t.Errorf("expected Response.StatusCode 301, got %d", rw.Response.StatusCode)
+	}
+	if rw.Response.RedirectURL != "https://example.com/blocked" {
+		t.Errorf("expected Response.RedirectURL 'https://example.com/blocked', got %q", rw.Response.RedirectURL)
+	}
+	if rw.Response.ContentType != "text/html" {
+		t.Errorf("expected Response.ContentType 'text/html', got %q", rw.Response.ContentType)
+	}
+}
+
 // H-1 & H-3: Concurrent requests (100 goroutines) with -race
 func TestRouteWarden_ConcurrentRequests(t *testing.T) {
 	rw := &caddywarden.RouteWarden{
