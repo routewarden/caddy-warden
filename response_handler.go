@@ -174,7 +174,7 @@ func NewResponseHandler(respCfg *ResponseConfig, topStatusCode int, topCustomTex
 	}
 
 	var parsedTmpl *template.Template
-	if respCfg.Mode == "captcha" {
+	if strings.EqualFold(respCfg.Mode, "captcha") {
 		tmplText := defaultCaptchaHTML
 		if respCfg.Captcha != nil && strings.TrimSpace(respCfg.Captcha.Template) != "" {
 			tmplText = respCfg.Captcha.Template
