@@ -109,6 +109,40 @@ func TestResponseHandler_Captcha(t *testing.T) {
 	}
 }
 
+func TestResponseHandler_Captcha_CaseInsensitive(t *testing.T) {
+	for _, mode := range []string{"Captcha", "CAPTCHA", "cApTcHa"} {
+		cfg := &caddywarden.ResponseConfig{
+			Mode:       mode,
+			StatusCode: http.StatusForbidden,
+			Captcha: &caddywarden.CaptchaConfig{
+				Provider: "turnstile",
+				SiteKey:  "0x4AAAAAAtestkey",
+				Title:    "Bot Check",
+			},
+		}
+
+		handler, err := caddywarden.NewResponseHandler(cfg, 0, "", false)
+		if err != nil {
+			t.Fatalf("unexpected error for mode %q: %v", mode, err)
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		rr := httptest.NewRecorder()
+		handler.ServeBlockedRequest(rr, req)
+
+		if rr.Code != http.StatusForbidden {
+			t.Errorf("mode %q: expected %d, got %d", mode, http.StatusForbidden, rr.Code)
+		}
+		body := rr.Body.String()
+		if !strings.Contains(body, "cf-turnstile") {
+			t.Errorf("mode %q: expected turnstile widget in body, got %s", mode, body)
+		}
+		if !strings.Contains(body, "0x4AAAAAAtestkey") {
+			t.Errorf("mode %q: expected sitekey in body", mode)
+		}
+	}
+}
+
 func TestResponseHandler_Redirect(t *testing.T) {
 	cfg := &caddywarden.ResponseConfig{
 		Mode:        "redirect",
@@ -661,6 +695,9 @@ func TestResponseHandler_EdgeCases(t *testing.T) {
 	handlerBombZero.ServeBlockedRequest(rrBombZero, reqDecoy)
 	if rrBombZero.Header().Get("Content-Encoding") != "gzip" {
 		t.Errorf("expected gzip encoding")
+	}
+	if rrBombZero.Code != http.StatusOK {
+		t.Errorf("expected gzipBomb with omitted statusCode to default to 200 OK, got %d", rrBombZero.Code)
 	}
 }
 
