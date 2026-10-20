@@ -1,5 +1,5 @@
 # Build Caddy with RouteWarden module
-FROM caddy:2.9-builder AS builder
+FROM caddy:2.11.7-builder AS builder
 
 WORKDIR /src
 COPY . .
@@ -9,7 +9,7 @@ RUN xcaddy build \
     --with github.com/routewarden/caddy-warden=.
 
 # Final minimal runtime image based on official Caddy Alpine
-FROM caddy:2.9-alpine
+FROM caddy:2.11.7-alpine
 
 LABEL org.opencontainers.image.title="Caddy Warden"
 LABEL org.opencontainers.image.description="Official Caddy v2 with RouteWarden active security and threat mitigation module"

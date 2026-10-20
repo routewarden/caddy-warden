@@ -113,12 +113,12 @@ If you need additional Caddy plugins alongside RouteWarden, build your own image
 
 ```dockerfile
 # Dockerfile
-FROM caddy:2.9-builder AS builder
+FROM caddy:2.11.7-builder AS builder
 
 RUN xcaddy build \
     --with github.com/routewarden/caddy-warden@v1.6.0
 
-FROM caddy:2.9-alpine
+FROM caddy:2.11.7-alpine
 
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
 ```
