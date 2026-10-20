@@ -203,9 +203,9 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 						if !d.NextArg() {
 							return d.ArgErr()
 						}
-						mb, err := strconv.Atoi(d.Val())
-						if err != nil {
-							return d.Errf("invalid gzip_bomb_mb %s: %v", d.Val(), err)
+						mb, err := strconv.ParseFloat(d.Val(), 64)
+						if err != nil || mb <= 0 {
+							return d.Errf("invalid gzip_bomb_mb %s: must be a positive number", d.Val())
 						}
 						rw.Response.GzipBombMB = mb
 
