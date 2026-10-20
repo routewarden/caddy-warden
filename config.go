@@ -51,7 +51,7 @@ type ResponseConfig struct {
 	RedirectURL              string            `json:"redirectUrl,omitempty"`              // Target URL when Mode is "redirect"
 	ProxyURL                 string            `json:"proxyUrl,omitempty"`                 // Target honeypot backend when Mode is "proxy"
 	Captcha                  *CaptchaConfig    `json:"captcha,omitempty"`                  // Captcha settings when Mode is "captcha"
-	GzipBombMB               int               `json:"gzipBombMB,omitempty"`               // Uncompressed size in Megabytes for gzipBomb mode (default: 10)
+	GzipBombMB               float64           `json:"gzipBombMB,omitempty"`               // Uncompressed size in Megabytes for gzipBomb mode (default: 10, supports float e.g. 0.5)
 	RetryAfterSeconds        int               `json:"retryAfterSeconds,omitempty"`        // Seconds for Retry-After header when Mode is "rateLimitChallenge" (default: 300)
 	TarpitDelayMs            int               `json:"tarpitDelayMs,omitempty"`            // Milliseconds between bytes for tarpit mode (default: 1000)
 	TarpitMaxDurationSeconds int               `json:"tarpitMaxDurationSeconds,omitempty"` // Max seconds before terminating tarpit connection (default: 60)

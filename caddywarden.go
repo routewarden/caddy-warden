@@ -128,8 +128,8 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 			ProxyURL                      *string           `json:"proxyUrl"`
 			ProxyURLSnake                 *string           `json:"proxy_url"`
 			Captcha                       *CaptchaConfig    `json:"captcha"`
-			GzipBombMB                    *int              `json:"gzipBombMB"`
-			GzipBombMBSnake               *int              `json:"gzip_bomb_mb"`
+			GzipBombMB                    *float64          `json:"gzipBombMB"`
+			GzipBombMBSnake               *float64          `json:"gzip_bomb_mb"`
 			RetryAfterSeconds             *int              `json:"retryAfterSeconds"`
 			RetryAfterSecondsSnake        *int              `json:"retry_after_seconds"`
 			TarpitDelayMs                 *int              `json:"tarpitDelayMs"`
