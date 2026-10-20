@@ -228,7 +228,7 @@ func TestCaddyfile_ComprehensiveDirectives(t *testing.T) {
 		t.Errorf("expected proxyUrl, got %s", resp.ProxyURL)
 	}
 	if resp.GzipBombMB != 15 {
-		t.Errorf("expected gzipBombMB 15, got %d", resp.GzipBombMB)
+		t.Errorf("expected gzipBombMB 15, got %v", resp.GzipBombMB)
 	}
 	if resp.RetryAfterSeconds != 120 {
 		t.Errorf("expected retryAfterSeconds 120, got %d", resp.RetryAfterSeconds)
@@ -750,5 +750,26 @@ func TestCaddyfile_ResponseExtendedDirectives(t *testing.T) {
 		t.Errorf("expected Template='<html><body>custom</body></html>', got %q", rw.Response.Captcha.Template)
 	}
 }
+
+func TestCaddyfile_GzipBombMB_Float(t *testing.T) {
+	caddyfileInput := `
+	routewarden {
+		response {
+			mode gzipBomb
+			gzip_bomb_mb 0.5
+		}
+	}
+	`
+	d := caddyfile.NewTestDispenser(caddyfileInput)
+	rw := &caddywarden.RouteWarden{}
+	err := rw.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+	if rw.Response == nil || rw.Response.GzipBombMB != 0.5 {
+		t.Fatalf("expected gzip_bomb_mb 0.5, got: %v", rw.Response.GzipBombMB)
+	}
+}
+
 
 
