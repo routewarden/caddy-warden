@@ -1,0 +1,7 @@
+.git
+.github
+.DS_Store
+*.out
+coverage.out
+samples
+examples
