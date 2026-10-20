@@ -34,9 +34,29 @@ jobs:
           go test -v -coverprofile=coverage.out ./...
           go tool cover -func=coverage.out
 
+  test-docker:
+    name: Docker Build Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Caddy image (dry run)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: caddy-warden:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   ci-success:
     name: CI Status Check
-    needs: [test-go]
+    needs: [test-go, test-docker]
     runs-on: ubuntu-latest
     steps:
       - name: Publish CI Results Summary
@@ -46,5 +66,6 @@ jobs:
           echo "| Check | Status | Details |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|---|" >> $GITHUB_STEP_SUMMARY
           echo "| **Go Tests & Race Detector** | ✅ Passed | Ran with \`-race\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Docker Image Build** | ✅ Passed | Verified \`Dockerfile\` build |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "🎉 **Ready for merge! All checks passed.**" >> $GITHUB_STEP_SUMMARY

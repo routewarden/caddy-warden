@@ -29,9 +29,46 @@ RouteWarden sits directly inside Caddy to catch these requests early. It cleans 
 
 ## Installation
 
-Because RouteWarden is a Caddy module, it needs to be built into Caddy using `xcaddy` or Docker.
+RouteWarden can be deployed instantly using our official pre-built Docker image, built into Caddy via `xcaddy`, or compiled from source.
 
-### Option 1: Build with `xcaddy` (CLI)
+### Option 1: Official Pre-built Docker Image (Recommended)
+
+Pre-built multi-architecture (`linux/amd64`, `linux/arm64`) Docker images are published to the GitHub Container Registry. No local Go or `xcaddy` installation is required:
+
+```bash
+docker run -d \
+  --name caddy-warden \
+  -p 80:80 \
+  -p 443:443 \
+  -v $PWD/Caddyfile:/etc/caddy/Caddyfile:ro \
+  -v caddy_data:/data \
+  -v caddy_config:/config \
+  ghcr.io/routewarden/caddy-warden:latest
+```
+
+#### Docker Compose
+
+```yaml
+services:
+  caddy:
+    image: ghcr.io/routewarden/caddy-warden:v1.6.0 # or :latest
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
+```
+
+---
+
+### Option 2: Build with `xcaddy` (CLI)
 
 First, install [xcaddy](https://github.com/caddyserver/xcaddy):
 
@@ -70,9 +107,9 @@ Confirm that the module is installed:
 
 ---
 
-### Option 2: Build with Docker
+### Option 3: Custom Dockerfile Build
 
-Use Caddy's official multi-stage builder to create your image:
+If you need additional Caddy plugins alongside RouteWarden, build your own image with Caddy's official multi-stage builder:
 
 ```dockerfile
 # Dockerfile
@@ -86,36 +123,11 @@ FROM caddy:2.9-alpine
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
 ```
 
-Build and run the container:
+Build and run:
 
 ```bash
 docker build -t caddy-warden .
 docker run -d -p 80:80 -p 443:443 -v $PWD/Caddyfile:/etc/caddy/Caddyfile caddy-warden
-```
-
----
-
-### Option 3: Docker Compose
-
-```yaml
-# docker-compose.yml
-services:
-  caddy:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-
-volumes:
-  caddy_data:
-  caddy_config:
 ```
 
 ---
