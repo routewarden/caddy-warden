@@ -6,6 +6,7 @@ COPY . .
 
 # Build Caddy binary with local module source
 RUN xcaddy build \
+    --output /usr/bin/caddy \
     --with github.com/routewarden/caddy-warden=.
 
 # Final minimal runtime image based on official Caddy Alpine
