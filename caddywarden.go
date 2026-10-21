@@ -22,6 +22,8 @@ import (
 func init() {
 	caddy.RegisterModule(RouteWarden{})
 	caddy.RegisterModule(RouteWardenSnakeCase{})
+	httpcaddyfile.RegisterDirectiveOrder("routewarden", httpcaddyfile.Before, "reverse_proxy")
+	httpcaddyfile.RegisterDirectiveOrder("route_warden", httpcaddyfile.Before, "reverse_proxy")
 	httpcaddyfile.RegisterHandlerDirective("routewarden", parseCaddyfile)
 	httpcaddyfile.RegisterHandlerDirective("route_warden", parseCaddyfile)
 }
@@ -361,6 +363,9 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		}
 		if rw.StatusCode > 0 {
 			fileCfg.StatusCode = rw.StatusCode
+			if fileCfg.Response != nil {
+				fileCfg.Response.StatusCode = rw.StatusCode
+			}
 		}
 		if rw.CustomResponseText != "" {
 			fileCfg.CustomResponseText = rw.CustomResponseText
@@ -380,7 +385,11 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		if rw.Debug {
 			fileCfg.Debug = true
 		}
+		if rw.SecurityLog {
+			fileCfg.SecurityLog = true
+		}
 
+		fileCfg.logger = rw.logger
 		fileCfg.ConfigFile = rw.ConfigFile
 		*rw = fileCfg
 	}
@@ -528,7 +537,10 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 	}
 
 	// Only inspect requests whose HTTP method matches configured verbs (default: GET)
-	if _, matchesMethod := rw.methods[strings.ToUpper(req.Method)]; !matchesMethod {
+	_, hasWildcard := rw.methods["*"]
+	_, hasAll := rw.methods["ALL"]
+	_, matchesMethod := rw.methods[strings.ToUpper(req.Method)]
+	if !hasWildcard && !hasAll && !matchesMethod {
 		if rw.Debug && rw.logger != nil {
 			rw.logger.Debug("routewarden: method not inspected",
 				zap.String("method", req.Method),
@@ -686,15 +698,15 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 	}
 
 	// Optional: Check Request Body (e.g. POST form payloads, OAuth grants, JSON params)
-	if !isBlocked && (rw.CheckBody || len(rw.compiledBody) > 0) && req.Body != nil {
+	if !isBlocked && (rw.CheckBody || len(rw.compiledBody) > 0) && req.Body != nil && req.Body != http.NoBody {
 		maxBytes := rw.CheckBodyMaxBytes
 		if maxBytes <= 0 {
 			maxBytes = 64 * 1024
 		}
 
 		origBody := req.Body
-		bodyBytes, err := io.ReadAll(io.LimitReader(origBody, maxBytes))
-		if err == nil && len(bodyBytes) > 0 {
+		bodyBytes, _ := io.ReadAll(io.LimitReader(origBody, maxBytes))
+		if len(bodyBytes) > 0 {
 			// Re-assign a new ReadCloser so downstream handlers (reverse_proxy) can still read the entire body
 			req.Body = &bodyReadCloser{
 				Reader: io.MultiReader(bytes.NewReader(bodyBytes), origBody),
@@ -742,12 +754,9 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 					break
 				}
 			}
-		} else if origBody != nil {
-			// Restore empty or unread body while preserving Closer
-			req.Body = &bodyReadCloser{
-				Reader: bytes.NewReader(bodyBytes),
-				Closer: origBody,
-			}
+		} else {
+			// Restore original body without unnecessary wrapping
+			req.Body = origBody
 		}
 	}
 
@@ -787,15 +796,10 @@ func (rw *RouteWarden) logSecurityEvent(r *http.Request, matchedTarget string, p
 	if rw.responseHandler != nil {
 		if rw.responseHandler.silentDrop {
 			mode = "silentDrop"
-			statusCode = 0
-		} else if rw.responseHandler.config != nil {
-			if rw.responseHandler.config.Mode != "" {
-				mode = rw.responseHandler.config.Mode
-			}
-			if rw.responseHandler.config.StatusCode != 0 {
-				statusCode = rw.responseHandler.config.StatusCode
-			}
+		} else if rw.responseHandler.config != nil && rw.responseHandler.config.Mode != "" {
+			mode = rw.responseHandler.config.Mode
 		}
+		statusCode = rw.responseHandler.EffectiveStatusCode()
 	} else if rw.Response != nil {
 		if rw.Response.Mode != "" {
 			mode = rw.Response.Mode
@@ -806,15 +810,25 @@ func (rw *RouteWarden) logSecurityEvent(r *http.Request, matchedTarget string, p
 	}
 	clientIP := rw.extractClientIP(r)
 
+	verdict := "BLOCK"
+	lowerMode := strings.ToLower(mode)
+	if lowerMode == "tarpit" {
+		verdict = "TARPIT"
+	} else if lowerMode == "captcha" || lowerMode == "ratelimitchallenge" {
+		verdict = "CHALLENGE"
+	}
+
 	// If using Caddy's zap logger:
 	if rw.logger != nil {
 		rw.logger.Warn("routewarden_block",
 			zap.String("type", "routewarden_block"),
 			zap.String("level", "warn"),
+			zap.String("verdict", verdict),
 			zap.Int("status_code", statusCode),
 			zap.String("client_ip", clientIP),
 			zap.String("method", r.Method),
-			zap.String("path", matchedTarget),
+			zap.String("path", r.URL.Path),
+			zap.String("matched_target", matchedTarget),
 			zap.String("request_uri", r.RequestURI),
 			zap.String("pattern", pattern),
 			zap.String("matched_pattern", pattern),
@@ -829,10 +843,12 @@ func (rw *RouteWarden) logSecurityEvent(r *http.Request, matchedTarget string, p
 		"type":            "routewarden_block",
 		"timestamp":       time.Now().UTC().Format(time.RFC3339),
 		"level":           "warn",
+		"verdict":         verdict,
 		"plugin":          "caddy-warden",
 		"client_ip":       clientIP,
 		"method":          r.Method,
-		"path":            matchedTarget,
+		"path":            r.URL.Path,
+		"matched_target":  matchedTarget,
 		"request_uri":     r.RequestURI,
 		"pattern":         pattern,
 		"matched_pattern": pattern,

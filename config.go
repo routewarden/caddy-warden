@@ -1,5 +1,7 @@
 package caddywarden
 
+import "encoding/json"
+
 // DefaultBlockPatterns contains well-known sensitive endpoints and file extensions.
 var DefaultBlockPatterns = []string{
 	// Sensitive extensions & environment files (e.g. .env, .env.local, .txt, .log, .bak, .backup, .sql, .conf, .config, .ini, .yaml, .yml)
@@ -70,4 +72,57 @@ func DefaultResponseConfig() *ResponseConfig {
 		TarpitMaxDurationSeconds: 60,
 		StreamSizeMB:             100,
 	}
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling to support both camelCase and snake_case tags.
+func (r *ResponseConfig) UnmarshalJSON(data []byte) error {
+	type alias ResponseConfig
+	var raw struct {
+		alias
+		StatusCodeSnake               *int     `json:"status_code"`
+		ContentTypeSnake              *string  `json:"content_type"`
+		RedirectURLSnake              *string  `json:"redirect_url"`
+		ProxyURLSnake                 *string  `json:"proxy_url"`
+		GzipBombMBSnake               *float64 `json:"gzip_bomb_mb"`
+		RetryAfterSecondsSnake        *int     `json:"retry_after_seconds"`
+		TarpitDelayMsSnake            *int     `json:"tarpit_delay_ms"`
+		TarpitMaxDurationSecondsSnake *int     `json:"tarpit_max_duration_seconds"`
+		StreamSizeMBSnake             *int     `json:"stream_size_mb"`
+	}
+
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	*r = ResponseConfig(raw.alias)
+
+	if raw.StatusCodeSnake != nil && r.StatusCode == 0 {
+		r.StatusCode = *raw.StatusCodeSnake
+	}
+	if raw.ContentTypeSnake != nil && r.ContentType == "" {
+		r.ContentType = *raw.ContentTypeSnake
+	}
+	if raw.RedirectURLSnake != nil && r.RedirectURL == "" {
+		r.RedirectURL = *raw.RedirectURLSnake
+	}
+	if raw.ProxyURLSnake != nil && r.ProxyURL == "" {
+		r.ProxyURL = *raw.ProxyURLSnake
+	}
+	if raw.GzipBombMBSnake != nil && r.GzipBombMB == 0 {
+		r.GzipBombMB = *raw.GzipBombMBSnake
+	}
+	if raw.RetryAfterSecondsSnake != nil && r.RetryAfterSeconds == 0 {
+		r.RetryAfterSeconds = *raw.RetryAfterSecondsSnake
+	}
+	if raw.TarpitDelayMsSnake != nil && r.TarpitDelayMs == 0 {
+		r.TarpitDelayMs = *raw.TarpitDelayMsSnake
+	}
+	if raw.TarpitMaxDurationSecondsSnake != nil && r.TarpitMaxDurationSeconds == 0 {
+		r.TarpitMaxDurationSeconds = *raw.TarpitMaxDurationSecondsSnake
+	}
+	if raw.StreamSizeMBSnake != nil && r.StreamSizeMB == 0 {
+		r.StreamSizeMB = *raw.StreamSizeMBSnake
+	}
+
+	return nil
 }
