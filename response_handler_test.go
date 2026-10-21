@@ -993,3 +993,46 @@ func TestResponseHandler_CRLF_Headers(t *testing.T) {
 	}
 }
 
+func TestResponseHandler_EffectiveStatusCode(t *testing.T) {
+	tests := []struct {
+		name       string
+		mode       string
+		statusCode int
+		silentDrop bool
+		expected   int
+	}{
+		{"nil config fallback", "", 0, false, http.StatusForbidden},
+		{"silent drop", "silentdrop", 403, true, 0},
+		{"redirect default", "redirect", 0, false, http.StatusFound},
+		{"redirect custom 301", "redirect", http.StatusMovedPermanently, false, http.StatusMovedPermanently},
+		{"fakesuccess default 403", "fakesuccess", 403, false, http.StatusOK},
+		{"fakesuccess custom 204", "fakesuccess", http.StatusNoContent, false, http.StatusNoContent},
+		{"ratelimit default 403", "ratelimit", 403, false, http.StatusTooManyRequests},
+		{"ratelimit zero", "ratelimit", 0, false, http.StatusTooManyRequests},
+		{"gzipbomb default zero", "gzipbomb", 0, false, http.StatusOK},
+		{"json custom 404", "json", http.StatusNotFound, false, http.StatusNotFound},
+		{"text default zero", "text", 0, false, http.StatusForbidden},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h, err := caddywarden.NewResponseHandler(&caddywarden.ResponseConfig{
+				Mode:       tc.mode,
+				StatusCode: tc.statusCode,
+			}, 0, "", tc.silentDrop)
+			if err != nil {
+				t.Fatalf("unexpected error creating handler: %v", err)
+			}
+			if got := h.EffectiveStatusCode(); got != tc.expected {
+				t.Errorf("expected status %d, got %d", tc.expected, got)
+			}
+		})
+	}
+
+	// Test nil handler safety
+	var nilHandler *caddywarden.ResponseHandler
+	if got := nilHandler.EffectiveStatusCode(); got != http.StatusForbidden {
+		t.Errorf("expected 403 for nil handler, got %d", got)
+	}
+}
+

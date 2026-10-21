@@ -147,7 +147,7 @@ func NewResponseHandler(respCfg *ResponseConfig, topStatusCode int, topCustomTex
 		}
 	} else {
 		if respCfg.StatusCode == 0 {
-			if topStatusCode != 0 && topStatusCode != http.StatusForbidden {
+			if topStatusCode != 0 {
 				respCfg.StatusCode = topStatusCode
 			} else {
 				switch strings.ToLower(respCfg.Mode) {
@@ -160,11 +160,7 @@ func NewResponseHandler(respCfg *ResponseConfig, topStatusCode int, topCustomTex
 				case "redirect":
 					respCfg.StatusCode = http.StatusFound
 				default:
-					if topStatusCode != 0 {
-						respCfg.StatusCode = topStatusCode
-					} else {
-						respCfg.StatusCode = http.StatusForbidden
-					}
+					respCfg.StatusCode = http.StatusForbidden
 				}
 			}
 		}
@@ -416,7 +412,8 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 		}
 
 		ctx := req.Context()
-		timeout := time.After(time.Duration(maxDurationSec) * time.Second)
+		timer := time.NewTimer(time.Duration(maxDurationSec) * time.Second)
+		defer timer.Stop()
 		ticker := time.NewTicker(time.Duration(delayMs) * time.Millisecond)
 		defer ticker.Stop()
 
@@ -425,7 +422,7 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 			select {
 			case <-ctx.Done():
 				return
-			case <-timeout:
+			case <-timer.C:
 				return
 			case <-ticker.C:
 				if _, err := w.Write([]byte(" ")); err != nil {
@@ -563,5 +560,45 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 		if h.config.Body != "" {
 			_, _ = fmt.Fprintln(w, h.config.Body)
 		}
+	}
+}
+
+// EffectiveStatusCode returns the HTTP status code that will actually be served to the client.
+func (h *ResponseHandler) EffectiveStatusCode() int {
+	if h == nil || h.config == nil {
+		return http.StatusForbidden
+	}
+	if h.silentDrop {
+		return 0
+	}
+	code := h.config.StatusCode
+	switch strings.ToLower(h.config.Mode) {
+	case "silentdrop", "silent_drop", "drop":
+		return 0
+	case "redirect":
+		if code < 300 || code > 308 {
+			return http.StatusFound
+		}
+		return code
+	case "fakesuccess", "decoy":
+		if code < 200 || code > 299 {
+			return http.StatusOK
+		}
+		return code
+	case "ratelimit", "ratelimitchallenge", "backoff":
+		if code == 0 || code == http.StatusForbidden {
+			return http.StatusTooManyRequests
+		}
+		return code
+	case "gzipbomb", "bomb":
+		if code == 0 {
+			return http.StatusOK
+		}
+		return code
+	default:
+		if code == 0 {
+			return http.StatusForbidden
+		}
+		return code
 	}
 }

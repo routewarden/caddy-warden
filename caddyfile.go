@@ -92,7 +92,7 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				rw.CheckHeaders = append(rw.CheckHeaders, args...)
 
 			case "debug":
-				rw.Debug = true
+				rw.Debug = parseBoolArg(d, true)
 
 			case "security_log":
 				rw.SecurityLog = parseBoolArg(d, true)
@@ -144,6 +144,9 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("invalid status code %s: %v", d.Val(), err)
 				}
 				rw.StatusCode = code
+				if rw.Response != nil {
+					rw.Response.StatusCode = code
+				}
 
 			case "methods":
 				args := d.RemainingArgs()
@@ -249,7 +252,7 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 						}
 						rw.Response.StreamSizeMB = mb
 
-					case "header":
+					case "header", "headers":
 						var key, val string
 						if !d.Args(&key, &val) {
 							return d.ArgErr()
@@ -316,7 +319,7 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	}
 	if len(customMethods) > 0 {
 		rw.Methods = customMethods
-	} else if len(rw.Methods) == 0 {
+	} else if rw.ConfigFile == "" {
 		rw.Methods = []string{"GET"}
 	}
 	return nil
