@@ -136,14 +136,16 @@ func (f *IPFilter) ExtractClientIP(req *http.Request) string {
 		// The request arrived from a trusted proxy: honour forwarding headers.
 		if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
 			parts := strings.Split(xff, ",")
-			ip := cleanIP(parts[0])
-			if ip != "" {
-				return ip
+			for _, part := range parts {
+				ip := cleanIP(part)
+				if net.ParseIP(ip) != nil {
+					return ip
+				}
 			}
 		}
 		if xrip := req.Header.Get("X-Real-IP"); xrip != "" {
 			ip := cleanIP(xrip)
-			if ip != "" {
+			if net.ParseIP(ip) != nil {
 				return ip
 			}
 		}
@@ -155,19 +157,24 @@ func (f *IPFilter) ExtractClientIP(req *http.Request) string {
 
 // ExtractClientIP extracts the client IP address from proxy headers or RemoteAddr socket.
 func ExtractClientIP(req *http.Request) string {
-	// Check X-Forwarded-For header first (first IP is the originating client)
+	if req == nil {
+		return ""
+	}
+	// Check X-Forwarded-For header first (first valid IP is the originating client)
 	if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
-		ip := cleanIP(parts[0])
-		if ip != "" {
-			return ip
+		for _, part := range parts {
+			ip := cleanIP(part)
+			if net.ParseIP(ip) != nil {
+				return ip
+			}
 		}
 	}
 
 	// Check X-Real-IP header
 	if xrip := req.Header.Get("X-Real-IP"); xrip != "" {
 		ip := cleanIP(xrip)
-		if ip != "" {
+		if net.ParseIP(ip) != nil {
 			return ip
 		}
 	}

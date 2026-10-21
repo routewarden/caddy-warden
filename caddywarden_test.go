@@ -1,10 +1,13 @@
 package caddywarden_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -1918,6 +1921,113 @@ func TestRouteWarden_AllowAndBlockPatterns_Comprehensive(t *testing.T) {
 			}
 			if rec.Code != tc.expectCode {
 				t.Errorf("[%s] expected status %d, got %d (%s)", tc.name, tc.expectCode, rec.Code, tc.reason)
+			}
+		})
+	}
+}
+
+func TestRouteWarden_HttpNoBodyPreserved(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:   true,
+		Methods:   []string{"POST"},
+		CheckBody: true,
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	downstreamCalled := false
+	downstream := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		downstreamCalled = true
+		if r.Body != http.NoBody {
+			t.Errorf("expected r.Body to remain http.NoBody, got %T", r.Body)
+		}
+		w.WriteHeader(http.StatusOK)
+		return nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/test", http.NoBody)
+	rec := httptest.NewRecorder()
+
+	if err := rw.ServeHTTP(rec, req, downstream); err != nil {
+		t.Fatalf("unexpected ServeHTTP error: %v", err)
+	}
+	if !downstreamCalled {
+		t.Fatalf("expected downstream handler to be called")
+	}
+}
+
+func TestRouteWarden_LogSecurityEvent_VerdictAndStatus(t *testing.T) {
+	tests := []struct {
+		name            string
+		mode            string
+		statusCode      int
+		expectedVerdict string
+		expectedStatus  int
+	}{
+		{"json block", "json", 403, "BLOCK", 403},
+		{"fakesuccess", "fakesuccess", 403, "BLOCK", 200},
+		{"tarpit", "tarpit", 403, "TARPIT", 403},
+		{"captcha challenge", "captcha", 403, "CHALLENGE", 403},
+		{"ratelimit", "ratelimit", 403, "BLOCK", 429},
+		{"silentdrop", "silentdrop", 403, "BLOCK", 0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rw := &caddywarden.RouteWarden{
+				Enabled:               true,
+				SecurityLog:           true,
+				EnableDefaultPatterns: false,
+				BlockPatterns:         []string{"/secret"},
+				Response: &caddywarden.ResponseConfig{
+					Mode:       tc.mode,
+					StatusCode: tc.statusCode,
+				},
+			}
+			if err := rw.Provision(caddy.Context{}); err != nil {
+				t.Fatalf("Provision error: %v", err)
+			}
+
+			// Capture stdout during ServeHTTP
+			oldStdout := os.Stdout
+			rPipe, wPipe, err := os.Pipe()
+			if err != nil {
+				t.Fatalf("pipe error: %v", err)
+			}
+			os.Stdout = wPipe
+
+			downstream := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+				w.WriteHeader(http.StatusOK)
+				return nil
+			})
+
+			req := httptest.NewRequest(http.MethodGet, "/secret", nil)
+			rec := httptest.NewRecorder()
+			_ = rw.ServeHTTP(rec, req, downstream)
+
+			_ = wPipe.Close()
+			os.Stdout = oldStdout
+
+			var buf bytes.Buffer
+			_, _ = io.Copy(&buf, rPipe)
+			_ = rPipe.Close()
+
+			output := buf.String()
+			if !strings.Contains(output, `"type":"routewarden_block"`) {
+				t.Fatalf("expected stdout to contain routewarden_block, got: %s", output)
+			}
+
+			var event map[string]interface{}
+			if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &event); err != nil {
+				t.Fatalf("failed to unmarshal JSON event: %v, raw: %s", err, output)
+			}
+
+			if v, ok := event["verdict"].(string); !ok || v != tc.expectedVerdict {
+				t.Errorf("expected verdict %q, got %q", tc.expectedVerdict, v)
+			}
+			if s, ok := event["status_code"].(float64); !ok || int(s) != tc.expectedStatus {
+				t.Errorf("expected status_code %d, got %v", tc.expectedStatus, event["status_code"])
 			}
 		})
 	}
