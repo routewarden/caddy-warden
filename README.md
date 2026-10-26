@@ -352,3 +352,7 @@ RouteWarden uses [Semantic Versioning 2.0.0](https://semver.org/). For release p
 ## License
 
 MIT License. Copyright (c) 2026 RouteWarden Contributors.
+
+## ASN allowlisting
+
+See [ASN allowlisting](ASN_ALLOWLIST.md) for configuration, routing snapshot generation, and security behavior.

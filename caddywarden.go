@@ -36,7 +36,7 @@ type RouteWardenSnakeCase struct {
 // CaddyModule returns the Caddy module information for route_warden.
 func (RouteWardenSnakeCase) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID:  "http.handlers.route_warden",
+		ID: "http.handlers.route_warden",
 		New: func() caddy.Module {
 			return &RouteWardenSnakeCase{
 				RouteWarden: RouteWarden{
@@ -51,7 +51,6 @@ func (RouteWardenSnakeCase) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-
 // RouteWarden is a Caddy v2 HTTP middleware module that blocks reconnaissance
 // scans, sensitive file exposure, and path-evasion attacks.
 type RouteWarden struct {
@@ -64,6 +63,8 @@ type RouteWarden struct {
 	EnableDefaultAllowPatterns bool            `json:"enable_default_allow_patterns"`
 	BlockPatterns              []string        `json:"block_patterns,omitempty"`
 	AllowPatterns              []string        `json:"allow_patterns,omitempty"`
+	AllowedASNs                []string        `json:"allowed_asns,omitempty"`
+	ASNDB                      string          `json:"asn_db,omitempty"`
 	AllowedIPs                 []string        `json:"allowed_ips,omitempty"`
 	TrustedProxies             []string        `json:"trusted_proxies,omitempty"`
 	Methods                    []string        `json:"methods,omitempty"`
@@ -91,7 +92,7 @@ type RouteWarden struct {
 // CaddyModule returns the Caddy module information.
 func (RouteWarden) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID:  "http.handlers.routewarden",
+		ID: "http.handlers.routewarden",
 		New: func() caddy.Module {
 			return &RouteWarden{
 				Enabled:                    true,
@@ -152,6 +153,10 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 			BlockPatternsSnake              []string              `json:"block_patterns"`
 			AllowPatterns                   []string              `json:"allowPatterns"`
 			AllowPatternsSnake              []string              `json:"allow_patterns"`
+			AllowedASNs                     []string              `json:"allowedASNs"`
+			AllowedASNsSnake                []string              `json:"allowed_asns"`
+			ASNDB                           string                `json:"asnDB"`
+			ASNDBSnake                      string                `json:"asn_db"`
 			AllowedIPs                      []string              `json:"allowedIps"`
 			AllowedIPsSnake                 []string              `json:"allowed_ips"`
 			TrustedProxies                  []string              `json:"trustedProxies"`
@@ -213,6 +218,14 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 			fileCfg.AllowPatterns = scf.AllowPatterns
 		} else if len(scf.AllowPatternsSnake) > 0 {
 			fileCfg.AllowPatterns = scf.AllowPatternsSnake
+		}
+		fileCfg.AllowedASNs = scf.AllowedASNs
+		if scf.AllowedASNsSnake != nil {
+			fileCfg.AllowedASNs = scf.AllowedASNsSnake
+		}
+		fileCfg.ASNDB = scf.ASNDB
+		if scf.ASNDBSnake != "" {
+			fileCfg.ASNDB = scf.ASNDBSnake
 		}
 		if len(scf.AllowedIPs) > 0 {
 			fileCfg.AllowedIPs = scf.AllowedIPs
@@ -342,6 +355,12 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		}
 		if len(rw.AllowPatterns) > 0 {
 			fileCfg.AllowPatterns = rw.AllowPatterns
+		}
+		if rw.AllowedASNs != nil {
+			fileCfg.AllowedASNs = rw.AllowedASNs
+		}
+		if rw.ASNDB != "" {
+			fileCfg.ASNDB = rw.ASNDB
 		}
 		if len(rw.AllowedIPs) > 0 {
 			fileCfg.AllowedIPs = rw.AllowedIPs
@@ -478,10 +497,14 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 	}
 
 	// 4. Initialize IP Filter
-	if len(rw.AllowedIPs) > 0 || len(rw.TrustedProxies) > 0 {
+	if len(rw.AllowedIPs) > 0 || len(rw.TrustedProxies) > 0 || len(rw.AllowedASNs) > 0 {
 		filter, err := NewIPFilter(rw.AllowedIPs, rw.TrustedProxies)
 		if err != nil {
 			return fmt.Errorf("routewarden: invalid ip filter config: %w", err)
+		}
+		filter.asn, err = NewASNFilter(rw.AllowedASNs, rw.ASNDB)
+		if err != nil {
+			return err
 		}
 		rw.ipFilter = filter
 	}
@@ -883,4 +906,3 @@ func (b *bodyReadCloser) Close() error {
 	}
 	return nil
 }
-
