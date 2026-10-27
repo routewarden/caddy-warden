@@ -91,7 +91,7 @@ Then build Caddy with RouteWarden:
 ```bash
 # Pin to a specific version (recommended for production)
 xcaddy build \
-    --with github.com/routewarden/caddy-warden@v1.6.2
+    --with github.com/routewarden/caddy-warden@v1.7.0
 
 # Or build using the latest version
 xcaddy build \
@@ -116,7 +116,7 @@ If you need additional Caddy plugins alongside RouteWarden, build your own image
 FROM caddy:2.11.7-builder AS builder
 
 RUN xcaddy build \
-    --with github.com/routewarden/caddy-warden@v1.6.2
+    --with github.com/routewarden/caddy-warden@v1.7.0
 
 FROM caddy:2.11.7-alpine
 
@@ -137,7 +137,7 @@ docker run -d -p 80:80 -p 443:443 -v $PWD/Caddyfile:/etc/caddy/Caddyfile caddy-w
 If you build your own Caddy binary in Go, import RouteWarden for automatic registration:
 
 ```bash
-go get github.com/routewarden/caddy-warden@v1.6.2
+go get github.com/routewarden/caddy-warden@v1.7.0
 ```
 
 ```go
