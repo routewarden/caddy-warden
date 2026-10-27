@@ -111,6 +111,18 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 				rw.AllowPatterns = append(rw.AllowPatterns, args...)
 
+			case "allowed_asns":
+				args := d.RemainingArgs()
+				if rw.AllowedASNs == nil {
+					rw.AllowedASNs = []string{}
+				}
+				rw.AllowedASNs = append(rw.AllowedASNs, args...)
+			case "asn_db":
+				args := d.RemainingArgs()
+				if len(args) != 1 {
+					return d.ArgErr()
+				}
+				rw.ASNDB = args[0]
 			case "allowed_ips":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
