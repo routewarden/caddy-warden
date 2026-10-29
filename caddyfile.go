@@ -14,8 +14,6 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 		Enabled:                    true,
 		EnableDefaultPatterns:      true,
 		EnableDefaultAllowPatterns: true,
-		Methods:                    []string{"GET"},
-		Response:                   DefaultResponseConfig(),
 	}
 	err := rw.UnmarshalCaddyfile(h.Dispenser)
 	return rw, err
@@ -37,14 +35,12 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	rw.Enabled = true
 	rw.EnableDefaultPatterns = true
 	rw.EnableDefaultAllowPatterns = true
-	if rw.Response == nil {
-		rw.Response = DefaultResponseConfig()
-	}
 
 	var customMethods []string
 
 	for d.Next() {
 		for d.NextBlock(0) {
+			rw.markExplicit(d.Val())
 			switch d.Val() {
 			case "config_file":
 				if !d.NextArg() {
@@ -111,6 +107,18 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 				rw.AllowPatterns = append(rw.AllowPatterns, args...)
 
+			case "allowed_asns":
+				args := d.RemainingArgs()
+				if rw.AllowedASNs == nil {
+					rw.AllowedASNs = []string{}
+				}
+				rw.AllowedASNs = append(rw.AllowedASNs, args...)
+			case "asn_db":
+				args := d.RemainingArgs()
+				if len(args) != 1 {
+					return d.ArgErr()
+				}
+				rw.ASNDB = args[0]
 			case "allowed_ips":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
@@ -130,10 +138,15 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				val := d.Val()
-				if strings.EqualFold(val, "silent_drop") || strings.EqualFold(val, "silentdrop") || strings.EqualFold(val, "drop") {
+				cleanVal := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(val), "_", ""))
+				if cleanVal == "silentdrop" || cleanVal == "drop" {
 					val = "silentDrop"
 				}
+				if rw.Response == nil {
+					rw.Response = DefaultResponseConfig()
+				}
 				rw.Response.Mode = val
+				rw.Mode = val
 
 			case "status_code":
 				if !d.NextArg() {
@@ -144,9 +157,34 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("invalid status code %s: %v", d.Val(), err)
 				}
 				rw.StatusCode = code
-				if rw.Response != nil {
-					rw.Response.StatusCode = code
+				if rw.Response == nil {
+					rw.Response = DefaultResponseConfig()
 				}
+				rw.Response.StatusCode = code
+
+			case "custom_response_text":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				rw.CustomResponseText = d.Val()
+
+			case "redirect_url":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				if rw.Response == nil {
+					rw.Response = DefaultResponseConfig()
+				}
+				rw.Response.RedirectURL = d.Val()
+
+			case "proxy_url":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				if rw.Response == nil {
+					rw.Response = DefaultResponseConfig()
+				}
+				rw.Response.ProxyURL = d.Val()
 
 			case "methods":
 				args := d.RemainingArgs()
@@ -156,6 +194,9 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				customMethods = append(customMethods, args...)
 
 			case "response":
+				if rw.Response == nil {
+					rw.Response = DefaultResponseConfig()
+				}
 				for d.NextBlock(1) {
 					switch d.Val() {
 					case "mode":
@@ -163,7 +204,8 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 							return d.ArgErr()
 						}
 						val := d.Val()
-						if strings.EqualFold(val, "silent_drop") || strings.EqualFold(val, "silentdrop") || strings.EqualFold(val, "drop") {
+						cleanVal := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(val), "_", ""))
+						if cleanVal == "silentdrop" || cleanVal == "drop" {
 							val = "silentDrop"
 						}
 						rw.Response.Mode = val
@@ -319,8 +361,12 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	}
 	if len(customMethods) > 0 {
 		rw.Methods = customMethods
+		rw.markExplicit("methods")
 	} else if rw.ConfigFile == "" {
 		rw.Methods = []string{"GET"}
+	}
+	if rw.ConfigFile == "" && rw.Response == nil {
+		rw.Response = DefaultResponseConfig()
 	}
 	return nil
 }

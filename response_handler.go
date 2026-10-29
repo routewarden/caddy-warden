@@ -146,11 +146,12 @@ func NewResponseHandler(respCfg *ResponseConfig, topStatusCode int, topCustomTex
 			Body:       topCustomText,
 		}
 	} else {
+		cleanMode := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(respCfg.Mode), "_", ""))
 		if respCfg.StatusCode == 0 {
 			if topStatusCode != 0 {
 				respCfg.StatusCode = topStatusCode
 			} else {
-				switch strings.ToLower(respCfg.Mode) {
+				switch cleanMode {
 				case "gzipbomb", "bomb":
 					respCfg.StatusCode = http.StatusOK
 				case "fakesuccess", "decoy":
@@ -164,13 +165,18 @@ func NewResponseHandler(respCfg *ResponseConfig, topStatusCode int, topCustomTex
 				}
 			}
 		}
+		if respCfg.Body == "" && topCustomText != "" && (cleanMode == "" || cleanMode == "text") {
+			respCfg.Body = topCustomText
+		}
 		if respCfg.Mode == "" {
 			respCfg.Mode = "text"
 		}
 	}
 
+	cleanMode := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(respCfg.Mode), "_", ""))
+
 	var parsedTmpl *template.Template
-	if strings.EqualFold(respCfg.Mode, "captcha") {
+	if cleanMode == "captcha" {
 		tmplText := defaultCaptchaHTML
 		if respCfg.Captcha != nil && strings.TrimSpace(respCfg.Captcha.Template) != "" {
 			tmplText = respCfg.Captcha.Template
@@ -183,7 +189,7 @@ func NewResponseHandler(respCfg *ResponseConfig, topStatusCode int, topCustomTex
 	}
 
 	var proxyHandler http.Handler
-	if strings.ToLower(respCfg.Mode) == "proxy" && strings.TrimSpace(respCfg.ProxyURL) != "" {
+	if (cleanMode == "proxy" || cleanMode == "mirror") && strings.TrimSpace(respCfg.ProxyURL) != "" {
 		targetURL, err := url.Parse(respCfg.ProxyURL)
 		if err != nil {
 			return nil, fmt.Errorf("invalid proxyUrl %q: %w", respCfg.ProxyURL, err)
@@ -194,7 +200,7 @@ func NewResponseHandler(respCfg *ResponseConfig, topStatusCode int, topCustomTex
 		proxyHandler = httputil.NewSingleHostReverseProxy(targetURL)
 	}
 
-	if strings.ToLower(respCfg.Mode) == "redirect" {
+	if cleanMode == "redirect" {
 		target := strings.TrimSpace(respCfg.RedirectURL)
 		if target != "" {
 			if strings.HasPrefix(target, "//") {
@@ -210,8 +216,10 @@ func NewResponseHandler(respCfg *ResponseConfig, topStatusCode int, topCustomTex
 	}
 
 	isSilentDrop := silentDrop
-	if respCfg != nil && (strings.EqualFold(respCfg.Mode, "silentdrop") || strings.EqualFold(respCfg.Mode, "silent_drop") || strings.EqualFold(respCfg.Mode, "drop")) {
-		isSilentDrop = true
+	if respCfg != nil {
+		if cleanMode == "silentdrop" || cleanMode == "drop" {
+			isSilentDrop = true
+		}
 	}
 
 	return &ResponseHandler{
@@ -229,6 +237,22 @@ func (h *ResponseHandler) SetProxyHandlerForTest(p http.Handler) {
 
 // ServeBlockedRequest handles writing the configured response to the client.
 func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.Request) {
+	if w == nil {
+		return
+	}
+	if h == nil {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	if h.config == nil {
+		h.config = DefaultResponseConfig()
+	}
+	if req == nil {
+		w.WriteHeader(h.EffectiveStatusCode())
+		return
+	}
+
 	if h.debug && h.logger != nil {
 		h.logger.Debug("routewarden: serving blocked response",
 			zap.String("mode", h.config.Mode),
@@ -237,7 +261,9 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 		)
 	}
 
-	if h.silentDrop {
+	mode := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(h.config.Mode), "_", ""))
+
+	if h.silentDrop || mode == "silentdrop" || mode == "drop" {
 		if hj, ok := w.(http.Hijacker); ok {
 			conn, _, err := hj.Hijack()
 			if err == nil {
@@ -270,7 +296,12 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 		}
 	}
 
-	switch strings.ToLower(h.config.Mode) {
+	statusCode := h.EffectiveStatusCode()
+	if statusCode == 0 {
+		statusCode = http.StatusForbidden
+	}
+
+	switch mode {
 	case "redirect":
 		target := h.config.RedirectURL
 		if target == "" {
@@ -295,11 +326,11 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 		}
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.WriteHeader(h.config.StatusCode)
+		w.WriteHeader(statusCode)
 
 		body := h.config.Body
 		if strings.TrimSpace(body) == "" {
-			body = fmt.Sprintf(`{"error":"Forbidden","status":%d,"message":"Access to sensitive endpoint is blocked"}`, h.config.StatusCode)
+			body = fmt.Sprintf(`{"error":"Forbidden","status":%d,"message":"Access to sensitive endpoint is blocked"}`, statusCode)
 		}
 		_, _ = fmt.Fprintln(w, body)
 
@@ -309,17 +340,17 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 			contentType = "text/html; charset=utf-8"
 		}
 		w.Header().Set("Content-Type", contentType)
-		w.WriteHeader(h.config.StatusCode)
+		w.WriteHeader(statusCode)
 
 		body := h.config.Body
 		if strings.TrimSpace(body) == "" {
-			body = fmt.Sprintf("<!DOCTYPE html><html><head><title>Access Denied</title></head><body><h1>%d Forbidden</h1><p>Access to this resource is denied.</p></body></html>", h.config.StatusCode)
+			body = fmt.Sprintf("<!DOCTYPE html><html><head><title>Access Denied</title></head><body><h1>%d Forbidden</h1><p>Access to this resource is denied.</p></body></html>", statusCode)
 		}
 		_, _ = fmt.Fprintln(w, body)
 
 	case "captcha":
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(h.config.StatusCode)
+		w.WriteHeader(statusCode)
 
 		data := struct {
 			Provider string
@@ -363,10 +394,6 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 		}
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Encoding", "gzip")
-		statusCode := h.config.StatusCode
-		if statusCode == 0 {
-			statusCode = http.StatusOK
-		}
 		w.WriteHeader(statusCode)
 
 		// Size in MB to generate. Each 1MB of zero-bytes compresses to ~1KB in gzip,
@@ -389,17 +416,28 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 			totalChunks = 1
 		}
 
+		flusher, hasFlusher := w.(http.Flusher)
+		ctx := req.Context()
 		for i := 0; i < totalChunks; i++ {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			if _, err := gz.Write(zeroChunk); err != nil {
 				// Client hung up, timed out, or crashed due to memory exhaustion
 				break
+			}
+			if hasFlusher && (i == 0 || (i+1)%32 == 0) {
+				_ = gz.Flush()
+				flusher.Flush()
 			}
 		}
 
 	case "tarpit":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.WriteHeader(h.config.StatusCode)
+		w.WriteHeader(statusCode)
 
 		flusher, ok := w.(http.Flusher)
 		delayMs := h.config.TarpitDelayMs
@@ -436,7 +474,12 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 
 	case "fakesuccess", "decoy":
 		// Serve synthetic honeypot payloads simulating real assets
-		p := strings.ToLower(req.URL.Path + " " + req.RequestURI)
+		cleanPath := "/"
+		p := "/"
+		if req.URL != nil {
+			cleanPath = strings.ToLower(req.URL.Path)
+			p = strings.ToLower(req.URL.Path + " " + req.RequestURI)
+		}
 		contentType := "text/plain; charset=utf-8"
 		body := h.config.Body
 
@@ -447,7 +490,7 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 			} else if strings.Contains(p, "actuator") {
 				contentType = "application/json"
 				body = `{"status":"UP","components":{"diskSpace":{"status":"UP","details":{"total":10737418240,"free":8589934592,"threshold":10485760}},"ping":{"status":"UP"}}}`
-			} else if strings.Contains(p, ".git/head") || strings.HasSuffix(p, ".git") || strings.Contains(p, ".git/") {
+			} else if strings.Contains(p, ".git/head") || strings.Contains(p, ".git/") || cleanPath == "/.git" || strings.HasSuffix(cleanPath, "/.git") {
 				contentType = "text/plain; charset=utf-8"
 				body = "ref: refs/heads/master\n"
 			} else if strings.Contains(p, "phpinfo") || strings.Contains(p, "info.php") {
@@ -466,10 +509,6 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 			contentType = h.config.ContentType
 		}
 		w.Header().Set("Content-Type", contentType)
-		statusCode := h.config.StatusCode
-		if statusCode < 200 || statusCode > 299 {
-			statusCode = http.StatusOK
-		}
 		w.WriteHeader(statusCode)
 		_, _ = fmt.Fprintln(w, body)
 
@@ -484,10 +523,6 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 			contentType = "application/json"
 		}
 		w.Header().Set("Content-Type", contentType)
-		statusCode := h.config.StatusCode
-		if statusCode == 0 || statusCode == http.StatusForbidden {
-			statusCode = http.StatusTooManyRequests
-		}
 		w.WriteHeader(statusCode)
 		body := h.config.Body
 		if strings.TrimSpace(body) == "" {
@@ -502,10 +537,10 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 		}
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.WriteHeader(h.config.StatusCode)
+		w.WriteHeader(statusCode)
 		body := h.config.Body
 		if strings.TrimSpace(body) == "" {
-			body = fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error>\n  <Status>%d</Status>\n  <Message>Access to protected endpoint is denied</Message>\n</Error>", h.config.StatusCode)
+			body = fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error>\n  <Status>%d</Status>\n  <Message>Access to protected endpoint is denied</Message>\n</Error>", statusCode)
 		}
 		_, _ = fmt.Fprintln(w, body)
 
@@ -525,7 +560,7 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 		}
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.WriteHeader(h.config.StatusCode)
+		w.WriteHeader(statusCode)
 
 		streamMB := h.config.StreamSizeMB
 		if streamMB <= 0 {
@@ -543,9 +578,19 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 			totalChunks = 16
 		}
 
+		flusher, hasFlusher := w.(http.Flusher)
+		ctx := req.Context()
 		for i := 0; i < totalChunks; i++ {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			if _, err := w.Write(buf); err != nil {
 				break
+			}
+			if hasFlusher && (i == 0 || (i+1)%16 == 0) {
+				flusher.Flush()
 			}
 		}
 
@@ -556,7 +601,7 @@ func (h *ResponseHandler) ServeBlockedRequest(w http.ResponseWriter, req *http.R
 		}
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.WriteHeader(h.config.StatusCode)
+		w.WriteHeader(statusCode)
 		if h.config.Body != "" {
 			_, _ = fmt.Fprintln(w, h.config.Body)
 		}
@@ -572,8 +617,9 @@ func (h *ResponseHandler) EffectiveStatusCode() int {
 		return 0
 	}
 	code := h.config.StatusCode
-	switch strings.ToLower(h.config.Mode) {
-	case "silentdrop", "silent_drop", "drop":
+	mode := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(h.config.Mode), "_", ""))
+	switch mode {
+	case "silentdrop", "drop":
 		return 0
 	case "redirect":
 		if code < 300 || code > 308 {

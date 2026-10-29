@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
@@ -1985,6 +1986,10 @@ func TestRouteWarden_LogSecurityEvent_VerdictAndStatus(t *testing.T) {
 					StatusCode: tc.statusCode,
 				},
 			}
+			if tc.mode == "tarpit" {
+				rw.Response.TarpitDelayMs = 1
+				rw.Response.TarpitMaxDurationSeconds = 1
+			}
 			if err := rw.Provision(caddy.Context{}); err != nil {
 				t.Fatalf("Provision error: %v", err)
 			}
@@ -2003,6 +2008,11 @@ func TestRouteWarden_LogSecurityEvent_VerdictAndStatus(t *testing.T) {
 			})
 
 			req := httptest.NewRequest(http.MethodGet, "/secret", nil)
+			if tc.mode == "tarpit" {
+				ctx, cancel := context.WithCancel(req.Context())
+				cancel()
+				req = req.WithContext(ctx)
+			}
 			rec := httptest.NewRecorder()
 			_ = rw.ServeHTTP(rec, req, downstream)
 
@@ -2030,5 +2040,338 @@ func TestRouteWarden_LogSecurityEvent_VerdictAndStatus(t *testing.T) {
 				t.Errorf("expected status_code %d, got %v", tc.expectedStatus, event["status_code"])
 			}
 		})
+	}
+}
+
+func TestRouteWarden_TarpitContextCancellation(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: false,
+		BlockPatterns:         []string{"^/tarpit-target$"},
+		Response: &caddywarden.ResponseConfig{
+			Mode:                     "tarpit",
+			StatusCode:               403,
+			TarpitDelayMs:            10,
+			TarpitMaxDurationSeconds: 60,
+		},
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/tarpit-target", nil)
+	ctx, cancel := context.WithCancel(req.Context())
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	start := time.Now()
+	_ = rw.ServeHTTP(rec, req, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	}))
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Fatalf("expected tarpit to terminate on context cancellation in <2s, took %v", elapsed)
+	}
+}
+
+func TestRouteWarden_TopLevelModeOverridesResponseMode(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: false,
+		BlockPatterns:         []string{"^/secret$"},
+		Mode:                  "fakesuccess",
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+	if rw.Response.Mode != "fakesuccess" {
+		t.Fatalf("expected Response.Mode to be overridden by Mode 'fakesuccess', got %q", rw.Response.Mode)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/secret", nil)
+	_ = rw.ServeHTTP(rec, req, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		return nil
+	}))
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected HTTP 200 from fakesuccess mode, got %d", rec.Code)
+	}
+}
+
+func TestRouteWarden_URIFragmentAnchorBypassPrevented(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	testPaths := []string{
+		"/server-status#admin",
+		"/server-status#section",
+		"/server.key#frag",
+		"/.env#local",
+		"/phpinfo.php#info",
+	}
+
+	for _, p := range testPaths {
+		t.Run(p, func(t *testing.T) {
+			passedThrough := false
+			req := httptest.NewRequest(http.MethodGet, p, nil)
+			req.RequestURI = p
+			rec := httptest.NewRecorder()
+			_ = rw.ServeHTTP(rec, req, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+				passedThrough = true
+				return nil
+			}))
+
+			if passedThrough {
+				t.Errorf("expected request %q with fragment to be blocked by DefaultBlockPatterns, but it passed through", p)
+			}
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("expected HTTP 403 for %q, got %d", p, rec.Code)
+			}
+		})
+	}
+}
+
+func TestRouteWarden_CheckBodyInspectsPOSTWhenMethodsOmitted(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: false,
+		CheckBody:             true,
+		CheckBodyPatterns:     []string{"(?i)password_leak"},
+		// Methods explicitly left omitted to test auto-inclusion of POST/PUT/PATCH/DELETE
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	bodyContent := "grant_type=password&secret=password_leak_token"
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/token", strings.NewReader(bodyContent))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	passedThrough := false
+	_ = rw.ServeHTTP(rec, req, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		passedThrough = true
+		return nil
+	}))
+
+	if passedThrough {
+		t.Errorf("expected POST with forbidden body payload to be blocked when methods is omitted, but request passed through")
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected HTTP 403, got %d", rec.Code)
+	}
+}
+
+func TestRouteWarden_ServeHTTP_NilSafety(t *testing.T) {
+	// Directly constructed RouteWarden without Provision()
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/.env", nil)
+	rec := httptest.NewRecorder()
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("ServeHTTP panicked on unprovisioned RouteWarden: %v", r)
+		}
+	}()
+
+	_ = rw.ServeHTTP(rec, req, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	}))
+}
+
+func TestRouteWarden_MatrixParam_NoAllowlistBypass(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:                    true,
+		EnableDefaultPatterns:      true,
+		EnableDefaultAllowPatterns: true,
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	attackPaths := []string{
+		"/.env;robots.txt",
+		"/.env;sitemap.xml",
+		"/.env;.well-known/acme-challenge/token",
+		"/backup.sql;robots.txt",
+		"/.git/config;robots.txt",
+		"/config.yaml;security.txt",
+	}
+
+	for _, p := range attackPaths {
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		rec := httptest.NewRecorder()
+		_ = rw.ServeHTTP(rec, req, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+			w.WriteHeader(http.StatusOK)
+			return nil
+		}))
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("expected path %q to be blocked (403), got %d", p, rec.Code)
+		}
+	}
+
+	// Legitimate path with matrix parameters should be allowed
+	legitReq := httptest.NewRequest(http.MethodGet, "/robots.txt;v=1", nil)
+	legitRec := httptest.NewRecorder()
+	_ = rw.ServeHTTP(legitRec, legitReq, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	}))
+	if legitRec.Code != http.StatusOK {
+		t.Errorf("expected legitimate /robots.txt;v=1 to be allowed (200), got %d", legitRec.Code)
+	}
+}
+
+func TestRouteWarden_CheckHeaders_MultiValue(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+		CheckHeaders:          []string{"X-Rewrite-URL", "X-Custom-Path"},
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	// 1. Duplicate HTTP headers
+	req := httptest.NewRequest(http.MethodGet, "/index.html", nil)
+	req.Header.Add("X-Rewrite-URL", "/safe/path")
+	req.Header.Add("X-Rewrite-URL", "/.env")
+	rec := httptest.NewRecorder()
+	_ = rw.ServeHTTP(rec, req, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	}))
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected duplicate header with /.env to be blocked (403), got %d", rec.Code)
+	}
+
+	// 2. Comma-separated header
+	reqComma := httptest.NewRequest(http.MethodGet, "/index.html", nil)
+	reqComma.Header.Set("X-Custom-Path", "/safe/path, /.env")
+	recComma := httptest.NewRecorder()
+	_ = rw.ServeHTTP(recComma, reqComma, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	}))
+	if recComma.Code != http.StatusForbidden {
+		t.Errorf("expected comma-separated header with /.env to be blocked (403), got %d", recComma.Code)
+	}
+}
+
+func TestRouteWarden_CheckQuery_MalformedPercentEncoding(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+		CheckQuery:            true,
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	// Query contains valid blocked parameter followed by malformed percent-encoding (%zz)
+	req := httptest.NewRequest(http.MethodGet, "/search?file=/.env&broken=%zz", nil)
+	rec := httptest.NewRecorder()
+	_ = rw.ServeHTTP(rec, req, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	}))
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected query with file=/.env&broken=%%zz to be blocked (403), got %d", rec.Code)
+	}
+}
+
+func TestRouteWarden_CheckBody_AutoExpandsDefaultMethods(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+		CheckBody:             true,
+		Methods:               []string{"GET"}, // Default method when not explicitly provided
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	bodyContent := "username=admin&secret=/.env"
+	req := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(bodyContent))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	_ = rw.ServeHTTP(rec, req, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	}))
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected POST request with sensitive body to be blocked when check_body is true (403), got %d", rec.Code)
+	}
+}
+
+func TestRouteWarden_CheckQuery_KeysWithSensitiveNames(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+		CheckQuery:            true,
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/search?.env=1", nil)
+	rec := httptest.NewRecorder()
+	_ = rw.ServeHTTP(rec, req, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	}))
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected query key .env to be blocked (403), got %d", rec.Code)
+	}
+}
+
+func TestRouteWarden_BracketedIPv6AllowedIPs(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+		AllowedIPs:            []string{"[2001:db8::]/32", "[2001:db9::cafe]"},
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	// 1. Allowed IP accessing blocked sensitive pattern /.env
+	reqAllowed := httptest.NewRequest(http.MethodGet, "/.env", nil)
+	reqAllowed.RemoteAddr = "[2001:db8::1]:54321"
+	recAllowed := httptest.NewRecorder()
+	_ = rw.ServeHTTP(recAllowed, reqAllowed, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	}))
+	if recAllowed.Code != http.StatusOK {
+		t.Errorf("expected allowed IPv6 to bypass /.env block, got %d", recAllowed.Code)
+	}
+
+	// 2. Unallowed IP accessing blocked sensitive pattern /.env
+	reqDenied := httptest.NewRequest(http.MethodGet, "/.env", nil)
+	reqDenied.RemoteAddr = "[2001:dba::1]:54321"
+	recDenied := httptest.NewRecorder()
+	_ = rw.ServeHTTP(recDenied, reqDenied, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	}))
+	if recDenied.Code != http.StatusForbidden {
+		t.Errorf("expected unallowed IPv6 accessing /.env to be blocked (403), got %d", recDenied.Code)
 	}
 }

@@ -1,6 +1,7 @@
 package caddywarden
 
 import (
+	"slices"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -36,21 +37,18 @@ type RouteWardenSnakeCase struct {
 // CaddyModule returns the Caddy module information for route_warden.
 func (RouteWardenSnakeCase) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID:  "http.handlers.route_warden",
+		ID: "http.handlers.route_warden",
 		New: func() caddy.Module {
 			return &RouteWardenSnakeCase{
 				RouteWarden: RouteWarden{
 					Enabled:                    true,
 					EnableDefaultPatterns:      true,
 					EnableDefaultAllowPatterns: true,
-					Methods:                    []string{"GET"},
-					Response:                   DefaultResponseConfig(),
 				},
 			}
 		},
 	}
 }
-
 
 // RouteWarden is a Caddy v2 HTTP middleware module that blocks reconnaissance
 // scans, sensitive file exposure, and path-evasion attacks.
@@ -64,6 +62,8 @@ type RouteWarden struct {
 	EnableDefaultAllowPatterns bool            `json:"enable_default_allow_patterns"`
 	BlockPatterns              []string        `json:"block_patterns,omitempty"`
 	AllowPatterns              []string        `json:"allow_patterns,omitempty"`
+	AllowedASNs                []string        `json:"allowed_asns,omitempty"`
+	ASNDB                      string          `json:"asn_db,omitempty"`
 	AllowedIPs                 []string        `json:"allowed_ips,omitempty"`
 	TrustedProxies             []string        `json:"trusted_proxies,omitempty"`
 	Methods                    []string        `json:"methods,omitempty"`
@@ -78,6 +78,7 @@ type RouteWarden struct {
 	Debug                      bool            `json:"debug,omitempty"`
 	SecurityLog                bool            `json:"security_log,omitempty"`
 	Response                   *ResponseConfig `json:"response,omitempty"`
+	ExplicitFields             []string        `json:"explicit_fields,omitempty"`
 
 	logger          *zap.Logger
 	methods         map[string]struct{}
@@ -88,17 +89,44 @@ type RouteWarden struct {
 	responseHandler *ResponseHandler
 }
 
+func (rw *RouteWarden) markExplicit(field string) {
+	if slices.Contains(rw.ExplicitFields, field) {
+		return
+	}
+	rw.ExplicitFields = append(rw.ExplicitFields, field)
+}
+
+func (rw *RouteWarden) isExplicit(field string) bool {
+	return slices.Contains(rw.ExplicitFields, field)
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling to track explicitly provided fields.
+func (rw *RouteWarden) UnmarshalJSON(data []byte) error {
+	type alias RouteWarden
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*rw = RouteWarden(a)
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err == nil {
+		for k := range raw {
+			rw.markExplicit(k)
+		}
+	}
+	return nil
+}
+
 // CaddyModule returns the Caddy module information.
 func (RouteWarden) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID:  "http.handlers.routewarden",
+		ID: "http.handlers.routewarden",
 		New: func() caddy.Module {
 			return &RouteWarden{
 				Enabled:                    true,
 				EnableDefaultPatterns:      true,
 				EnableDefaultAllowPatterns: true,
-				Methods:                    []string{"GET"},
-				Response:                   DefaultResponseConfig(),
 			}
 		},
 	}
@@ -152,6 +180,10 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 			BlockPatternsSnake              []string              `json:"block_patterns"`
 			AllowPatterns                   []string              `json:"allowPatterns"`
 			AllowPatternsSnake              []string              `json:"allow_patterns"`
+			AllowedASNs                     []string              `json:"allowedASNs"`
+			AllowedASNsSnake                []string              `json:"allowed_asns"`
+			ASNDB                           string                `json:"asnDB"`
+			ASNDBSnake                      string                `json:"asn_db"`
 			AllowedIPs                      []string              `json:"allowedIps"`
 			AllowedIPsSnake                 []string              `json:"allowed_ips"`
 			TrustedProxies                  []string              `json:"trustedProxies"`
@@ -213,6 +245,15 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 			fileCfg.AllowPatterns = scf.AllowPatterns
 		} else if len(scf.AllowPatternsSnake) > 0 {
 			fileCfg.AllowPatterns = scf.AllowPatternsSnake
+		}
+		if len(scf.AllowedASNs) > 0 {
+			fileCfg.AllowedASNs = scf.AllowedASNs
+		} else if len(scf.AllowedASNsSnake) > 0 {
+			fileCfg.AllowedASNs = scf.AllowedASNsSnake
+		}
+		fileCfg.ASNDB = scf.ASNDB
+		if scf.ASNDBSnake != "" {
+			fileCfg.ASNDB = scf.ASNDBSnake
 		}
 		if len(scf.AllowedIPs) > 0 {
 			fileCfg.AllowedIPs = scf.AllowedIPs
@@ -337,11 +378,28 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		}
 
 		// Apply inline overrides: any explicitly configured inline property wins
+		hasExplicit := len(rw.ExplicitFields) > 0
+
+		if rw.isExplicit("enabled") {
+			fileCfg.Enabled = rw.Enabled
+		}
+		if rw.isExplicit("enable_default_patterns") {
+			fileCfg.EnableDefaultPatterns = rw.EnableDefaultPatterns
+		}
+		if rw.isExplicit("enable_default_allow_patterns") {
+			fileCfg.EnableDefaultAllowPatterns = rw.EnableDefaultAllowPatterns
+		}
 		if len(rw.BlockPatterns) > 0 {
 			fileCfg.BlockPatterns = rw.BlockPatterns
 		}
 		if len(rw.AllowPatterns) > 0 {
 			fileCfg.AllowPatterns = rw.AllowPatterns
+		}
+		if rw.AllowedASNs != nil {
+			fileCfg.AllowedASNs = rw.AllowedASNs
+		}
+		if rw.ASNDB != "" {
+			fileCfg.ASNDB = rw.ASNDB
 		}
 		if len(rw.AllowedIPs) > 0 {
 			fileCfg.AllowedIPs = rw.AllowedIPs
@@ -349,7 +407,7 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		if len(rw.TrustedProxies) > 0 {
 			fileCfg.TrustedProxies = rw.TrustedProxies
 		}
-		if len(rw.Methods) > 0 {
+		if rw.isExplicit("methods") || (!hasExplicit && len(rw.Methods) > 0) {
 			fileCfg.Methods = rw.Methods
 		}
 		if len(rw.CheckHeaders) > 0 {
@@ -372,21 +430,36 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		}
 		if rw.Mode != "" {
 			fileCfg.Mode = rw.Mode
+			if fileCfg.Response != nil {
+				fileCfg.Response.Mode = rw.Mode
+			}
 		}
-		if rw.Response != nil {
+		if rw.isExplicit("response") || (!hasExplicit && rw.Response != nil) {
 			fileCfg.Response = rw.Response
 		}
-		if rw.CheckQuery {
-			fileCfg.CheckQuery = true
+		if rw.isExplicit("redirect_url") && rw.Response != nil && rw.Response.RedirectURL != "" {
+			if fileCfg.Response == nil {
+				fileCfg.Response = DefaultResponseConfig()
+			}
+			fileCfg.Response.RedirectURL = rw.Response.RedirectURL
 		}
-		if rw.CheckBody {
-			fileCfg.CheckBody = true
+		if rw.isExplicit("proxy_url") && rw.Response != nil && rw.Response.ProxyURL != "" {
+			if fileCfg.Response == nil {
+				fileCfg.Response = DefaultResponseConfig()
+			}
+			fileCfg.Response.ProxyURL = rw.Response.ProxyURL
 		}
-		if rw.Debug {
-			fileCfg.Debug = true
+		if rw.isExplicit("check_query") || (!hasExplicit && rw.CheckQuery) {
+			fileCfg.CheckQuery = rw.CheckQuery
 		}
-		if rw.SecurityLog {
-			fileCfg.SecurityLog = true
+		if rw.isExplicit("check_body") || (!hasExplicit && rw.CheckBody) {
+			fileCfg.CheckBody = rw.CheckBody
+		}
+		if rw.isExplicit("debug") || (!hasExplicit && rw.Debug) {
+			fileCfg.Debug = rw.Debug
+		}
+		if rw.isExplicit("security_log") || (!hasExplicit && rw.SecurityLog) {
+			fileCfg.SecurityLog = rw.SecurityLog
 		}
 
 		fileCfg.logger = rw.logger
@@ -399,17 +472,30 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 	}
 
 	// Response action is configured via mode
-	if rw.Mode != "" && (rw.Response.Mode == "" || rw.Response.Mode == "text") {
+	if rw.Mode != "" {
 		rw.Response.Mode = rw.Mode
 	}
-	if strings.EqualFold(rw.Response.Mode, "silent_drop") || strings.EqualFold(rw.Response.Mode, "silentdrop") || strings.EqualFold(rw.Response.Mode, "drop") {
+	cleanMode := strings.ToLower(strings.ReplaceAll(rw.Response.Mode, "_", ""))
+	if cleanMode == "silentdrop" || cleanMode == "drop" {
 		rw.Response.Mode = "silentDrop"
 	}
 
-	// Initialize Methods Filter (defaults to ["GET"])
+	// Initialize Methods Filter (defaults to ["GET"], or common verbs when body inspection is enabled)
 	methodsMap := make(map[string]struct{})
 	if len(rw.Methods) == 0 {
 		methodsMap["GET"] = struct{}{}
+		if rw.CheckBody || len(rw.CheckBodyPatterns) > 0 {
+			methodsMap["POST"] = struct{}{}
+			methodsMap["PUT"] = struct{}{}
+			methodsMap["PATCH"] = struct{}{}
+			methodsMap["DELETE"] = struct{}{}
+		}
+	} else if len(rw.Methods) == 1 && strings.EqualFold(rw.Methods[0], "GET") && (rw.CheckBody || len(rw.CheckBodyPatterns) > 0) {
+		methodsMap["GET"] = struct{}{}
+		methodsMap["POST"] = struct{}{}
+		methodsMap["PUT"] = struct{}{}
+		methodsMap["PATCH"] = struct{}{}
+		methodsMap["DELETE"] = struct{}{}
 	} else {
 		for _, m := range rw.Methods {
 			m = strings.ToUpper(strings.TrimSpace(m))
@@ -419,6 +505,12 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		}
 		if len(methodsMap) == 0 {
 			methodsMap["GET"] = struct{}{}
+			if rw.CheckBody || len(rw.CheckBodyPatterns) > 0 {
+				methodsMap["POST"] = struct{}{}
+				methodsMap["PUT"] = struct{}{}
+				methodsMap["PATCH"] = struct{}{}
+				methodsMap["DELETE"] = struct{}{}
+			}
 		}
 	}
 	rw.methods = methodsMap
@@ -478,15 +570,19 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 	}
 
 	// 4. Initialize IP Filter
-	if len(rw.AllowedIPs) > 0 || len(rw.TrustedProxies) > 0 {
+	if len(rw.AllowedIPs) > 0 || len(rw.TrustedProxies) > 0 || len(rw.AllowedASNs) > 0 {
 		filter, err := NewIPFilter(rw.AllowedIPs, rw.TrustedProxies)
 		if err != nil {
 			return fmt.Errorf("routewarden: invalid ip filter config: %w", err)
 		}
+		filter.asn, err = NewASNFilter(rw.AllowedASNs, rw.ASNDB)
+		if err != nil {
+			return err
+		}
 		rw.ipFilter = filter
 	}
 
-	// 4. Initialize Response Handler
+	// 5. Initialize Response Handler
 	isSilentDrop := strings.EqualFold(rw.Response.Mode, "silentdrop") || strings.EqualFold(rw.Response.Mode, "silent_drop") || strings.EqualFold(rw.Response.Mode, "drop")
 	respHandler, err := NewResponseHandler(rw.Response, rw.StatusCode, rw.CustomResponseText, isSilentDrop)
 	if err != nil {
@@ -537,18 +633,21 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 	}
 
 	// Only inspect requests whose HTTP method matches configured verbs (default: GET)
-	_, hasWildcard := rw.methods["*"]
-	_, hasAll := rw.methods["ALL"]
-	_, matchesMethod := rw.methods[strings.ToUpper(req.Method)]
-	if !hasWildcard && !hasAll && !matchesMethod {
-		if rw.Debug && rw.logger != nil {
-			rw.logger.Debug("routewarden: method not inspected",
-				zap.String("method", req.Method),
-				zap.String("path", req.URL.Path),
-			)
+	if len(rw.methods) > 0 {
+		_, hasWildcard := rw.methods["*"]
+		_, hasAll := rw.methods["ALL"]
+		_, matchesMethod := rw.methods[strings.ToUpper(req.Method)]
+		if !hasWildcard && !hasAll && !matchesMethod {
+			if rw.Debug && rw.logger != nil {
+				rw.logger.Debug("routewarden: method not inspected",
+					zap.String("method", req.Method),
+					zap.String("path", req.URL.Path),
+				)
+			}
+			return next.ServeHTTP(w, req)
 		}
-		return next.ServeHTTP(w, req)
 	}
+
 
 	// Stage 1: IP Whitelist bypass
 	if rw.ipFilter != nil {
@@ -625,14 +724,24 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 		}
 
 		queryCandidates := []string{req.URL.RawQuery, unescapedQuery}
-		if parsedQuery, err := url.ParseQuery(req.URL.RawQuery); err == nil {
-			for key, vals := range parsedQuery {
-				queryCandidates = append(queryCandidates, key)
-				queryCandidates = append(queryCandidates, ExtractCandidatePaths("", key, key)...)
-				for _, v := range vals {
-					queryCandidates = append(queryCandidates, v)
-					queryCandidates = append(queryCandidates, ExtractCandidatePaths(v, v, v)...)
-				}
+		parsedQuery, _ := url.ParseQuery(req.URL.RawQuery)
+		for key, vals := range parsedQuery {
+			queryCandidates = append(queryCandidates, key)
+			queryCandidates = append(queryCandidates, ExtractCandidatePaths("", key, key)...)
+			for _, v := range vals {
+				queryCandidates = append(queryCandidates, v)
+				queryCandidates = append(queryCandidates, ExtractCandidatePaths(v, v, v)...)
+			}
+		}
+		// Also split raw query string on '&' and ';' to catch keys/values even when malformed encodings cause ParseQuery to error
+		for _, pair := range strings.FieldsFunc(req.URL.RawQuery, func(r rune) bool { return r == '&' || r == ';' }) {
+			if k, v, ok := strings.Cut(pair, "="); ok {
+				queryCandidates = append(queryCandidates, k, v)
+				queryCandidates = append(queryCandidates, ExtractCandidatePaths("", k, k)...)
+				queryCandidates = append(queryCandidates, ExtractCandidatePaths("", v, v)...)
+			} else if pair != "" {
+				queryCandidates = append(queryCandidates, pair)
+				queryCandidates = append(queryCandidates, ExtractCandidatePaths("", pair, pair)...)
 			}
 		}
 		if rw.Debug && rw.logger != nil {
@@ -665,25 +774,45 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 	// Optional: Check Forwarded/Rewrite Headers
 	if !isBlocked && len(rw.CheckHeaders) > 0 {
 		for _, headerName := range rw.CheckHeaders {
-			headerVal := strings.TrimSpace(req.Header.Get(headerName))
-			if headerVal == "" {
-				continue
-			}
-			headerCandidates := append([]string{headerVal}, ExtractCandidatePaths("", headerVal, headerVal)...)
-			for _, hc := range headerCandidates {
-				for _, re := range rw.compiledBlock {
-					if re.MatchString(hc) {
-						isBlocked = true
-						blockedByPattern = re.String()
-						blockedTarget = headerVal
-						blockedReason = "header_blocked"
-						if rw.Debug && rw.logger != nil {
-							rw.logger.Debug("routewarden: header candidate matched block pattern",
-								zap.String("header", headerName),
-								zap.String("candidate_value", hc),
-								zap.String("matched_pattern", blockedByPattern),
-							)
+			for _, rawHeaderVal := range req.Header.Values(headerName) {
+				rawHeaderVal = strings.TrimSpace(rawHeaderVal)
+				if rawHeaderVal == "" {
+					continue
+				}
+				headerVals := []string{rawHeaderVal}
+				if strings.Contains(rawHeaderVal, ",") {
+					for _, part := range strings.Split(rawHeaderVal, ",") {
+						part = strings.TrimSpace(part)
+						if part != "" && part != rawHeaderVal {
+							headerVals = append(headerVals, part)
 						}
+					}
+				}
+
+				for _, headerVal := range headerVals {
+					headerCandidates := append([]string{headerVal}, ExtractCandidatePaths("", headerVal, headerVal)...)
+					for _, hc := range headerCandidates {
+						for _, re := range rw.compiledBlock {
+							if re.MatchString(hc) {
+								isBlocked = true
+								blockedByPattern = re.String()
+								blockedTarget = rawHeaderVal
+								blockedReason = "header_blocked"
+								if rw.Debug && rw.logger != nil {
+									rw.logger.Debug("routewarden: header candidate matched block pattern",
+										zap.String("header", headerName),
+										zap.String("candidate_value", hc),
+										zap.String("matched_pattern", blockedByPattern),
+									)
+								}
+								break
+							}
+						}
+						if isBlocked {
+							break
+						}
+					}
+					if isBlocked {
 						break
 					}
 				}
@@ -762,6 +891,15 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 
 	if isBlocked {
 		rw.logSecurityEvent(req, blockedTarget, blockedByPattern, blockedReason)
+		respMode := "text"
+		if rw.responseHandler != nil && rw.responseHandler.config != nil && rw.responseHandler.config.Mode != "" {
+			respMode = rw.responseHandler.config.Mode
+		} else if rw.Response != nil && rw.Response.Mode != "" {
+			respMode = rw.Response.Mode
+		} else if rw.Mode != "" {
+			respMode = rw.Mode
+		}
+
 		if rw.logger != nil {
 			clientIP := rw.extractClientIP(req)
 			rw.logger.Warn("routewarden: blocked sensitive request",
@@ -769,10 +907,15 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 				zap.String("remote_addr", req.RemoteAddr),
 				zap.String("path", req.URL.Path),
 				zap.String("pattern", blockedByPattern),
-				zap.String("mode", rw.Response.Mode),
+				zap.String("mode", respMode),
 			)
 		}
-		rw.responseHandler.ServeBlockedRequest(w, req)
+		if rw.responseHandler != nil {
+			rw.responseHandler.ServeBlockedRequest(w, req)
+		} else {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte("Access Denied\n"))
+		}
 		return nil
 	}
 
@@ -811,10 +954,11 @@ func (rw *RouteWarden) logSecurityEvent(r *http.Request, matchedTarget string, p
 	clientIP := rw.extractClientIP(r)
 
 	verdict := "BLOCK"
-	lowerMode := strings.ToLower(mode)
-	if lowerMode == "tarpit" {
+	cleanMode := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(mode), "_", ""))
+	switch cleanMode {
+	case "tarpit":
 		verdict = "TARPIT"
-	} else if lowerMode == "captcha" || lowerMode == "ratelimitchallenge" {
+	case "captcha", "ratelimitchallenge":
 		verdict = "CHALLENGE"
 	}
 
@@ -883,4 +1027,3 @@ func (b *bodyReadCloser) Close() error {
 	}
 	return nil
 }
-
