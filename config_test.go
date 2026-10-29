@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	caddywarden "github.com/routewarden/caddy-warden"
 )
@@ -316,5 +317,105 @@ func TestRouteWarden_DoubleProvision(t *testing.T) {
 	}
 	if err := rw.Provision(ctx); err != nil {
 		t.Fatalf("second provision failed: %v", err)
+	}
+}
+
+// CF-14: config_file base Methods and Response are preserved and not wiped out by defaults
+func TestConfigFile_MethodsAndResponsePreserved(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "routewarden.json")
+	jsonContent := `{
+		"methods": ["POST", "PUT"],
+		"response": {
+			"mode": "redirect",
+			"redirectUrl": "https://example.com/blocked",
+			"statusCode": 302
+		}
+	}`
+	if err := os.WriteFile(cfgPath, []byte(jsonContent), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	caddyfileContent := `routewarden {
+		config_file ` + cfgPath + `
+	}`
+	d := caddyfile.NewTestDispenser(caddyfileContent)
+	rw := &caddywarden.RouteWarden{}
+	if err := rw.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile error: %v", err)
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	// Verify GET passes through because methods in config_file is [POST, PUT]
+	reqGet := httptest.NewRequest(http.MethodGet, "/.env", nil)
+	recGet := httptest.NewRecorder()
+	passedThrough := false
+	downstream := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		passedThrough = true
+		w.WriteHeader(http.StatusOK)
+		return nil
+	})
+	_ = rw.ServeHTTP(recGet, reqGet, downstream)
+	if !passedThrough {
+		t.Errorf("expected GET to pass through because config_file specified methods [POST, PUT]")
+	}
+
+	// Verify POST triggers blocked redirect from config_file
+	reqPost := httptest.NewRequest(http.MethodPost, "/.env", nil)
+	recPost := httptest.NewRecorder()
+	passedThroughPost := false
+	_ = rw.ServeHTTP(recPost, reqPost, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		passedThroughPost = true
+		return nil
+	}))
+	if passedThroughPost {
+		t.Errorf("expected POST to be blocked by RouteWarden")
+	}
+	if recPost.Code != http.StatusFound {
+		t.Errorf("expected redirect status 302 from config_file, got %d", recPost.Code)
+	}
+	if loc := recPost.Header().Get("Location"); loc != "https://example.com/blocked" {
+		t.Errorf("expected Location 'https://example.com/blocked', got %q", loc)
+	}
+}
+
+// CF-15: Inline boolean overrides (enabled, enable_default_patterns) override config_file values
+func TestConfigFile_InlineBooleanOverridesPreserved(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "routewarden.json")
+	jsonContent := `{
+		"enabled": true,
+		"enableDefaultPatterns": true,
+		"enableDefaultAllowPatterns": true
+	}`
+	if err := os.WriteFile(cfgPath, []byte(jsonContent), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	caddyfileContent := `routewarden {
+		config_file ` + cfgPath + `
+		enabled false
+		enable_default_patterns false
+		enable_default_allow_patterns false
+	}`
+	d := caddyfile.NewTestDispenser(caddyfileContent)
+	rw := &caddywarden.RouteWarden{}
+	if err := rw.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile error: %v", err)
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	if rw.Enabled {
+		t.Errorf("expected inline enabled=false to override file enabled=true")
+	}
+	if rw.EnableDefaultPatterns {
+		t.Errorf("expected inline enable_default_patterns=false to override file")
+	}
+	if rw.EnableDefaultAllowPatterns {
+		t.Errorf("expected inline enable_default_allow_patterns=false to override file")
 	}
 }

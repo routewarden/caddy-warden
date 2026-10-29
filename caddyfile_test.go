@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	caddywarden "github.com/routewarden/caddy-warden"
 )
 
@@ -771,5 +773,89 @@ func TestCaddyfile_GzipBombMB_Float(t *testing.T) {
 	}
 }
 
+func TestCaddyfile_TopLevelModeOverridesResponseMode(t *testing.T) {
+	caddyfileContent := `routewarden {
+		mode fakesuccess
+		block_patterns "^/secret$"
+		enable_default_patterns false
+	}`
+	d := caddyfile.NewTestDispenser(caddyfileContent)
+	rw := &caddywarden.RouteWarden{}
+	if err := rw.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile error: %v", err)
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+	if rw.Response.Mode != "fakesuccess" {
+		t.Fatalf("expected Response.Mode to be 'fakesuccess' from Caddyfile mode directive, got %q", rw.Response.Mode)
+	}
 
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/secret", nil)
+	_ = rw.ServeHTTP(rec, req, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		return nil
+	}))
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected HTTP 200 from fakesuccess mode, got %d", rec.Code)
+	}
+}
+
+func TestCaddyfile_TopLevelResponseDirectives(t *testing.T) {
+	caddyfileContent := `
+	routewarden {
+		custom_response_text "Top level denied"
+		redirect_url "https://example.com/blocked"
+		proxy_url "http://127.0.0.1:8080/sink"
+	}`
+	d := caddyfile.NewTestDispenser(caddyfileContent)
+	rw := &caddywarden.RouteWarden{}
+	if err := rw.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile error: %v", err)
+	}
+
+	if rw.CustomResponseText != "Top level denied" {
+		t.Errorf("expected CustomResponseText 'Top level denied', got %q", rw.CustomResponseText)
+	}
+	if rw.Response == nil || rw.Response.RedirectURL != "https://example.com/blocked" {
+		t.Errorf("expected Response.RedirectURL 'https://example.com/blocked', got %+v", rw.Response)
+	}
+	if rw.Response.ProxyURL != "http://127.0.0.1:8080/sink" {
+		t.Errorf("expected Response.ProxyURL 'http://127.0.0.1:8080/sink', got %+v", rw.Response)
+	}
+}
+
+func TestCaddyfile_TopLevelOverrideConfigFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgFile := tmpDir + "/routewarden.json"
+	baseJSON := `{
+		"enabled": true,
+		"response": {
+			"mode": "redirect",
+			"redirect_url": "https://base.example.com"
+		}
+	}`
+	if err := os.WriteFile(cfgFile, []byte(baseJSON), 0644); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	caddyfileContent := fmt.Sprintf(`
+	routewarden {
+		config_file %s
+		redirect_url "https://override.example.com"
+	}`, cfgFile)
+
+	d := caddyfile.NewTestDispenser(caddyfileContent)
+	rw := &caddywarden.RouteWarden{}
+	if err := rw.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile error: %v", err)
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	if rw.Response == nil || rw.Response.RedirectURL != "https://override.example.com" {
+		t.Errorf("expected top-level redirect_url override 'https://override.example.com', got %+v", rw.Response)
+	}
+}
 

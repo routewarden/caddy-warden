@@ -164,10 +164,17 @@ func TestPathNormalizer_EdgeCases(t *testing.T) {
 	// P-5: Path with embedded fragment (#anchor) – fragment must not pollute path candidates
 	t.Run("P-5 embedded fragment", func(t *testing.T) {
 		candidates := caddywarden.ExtractCandidatePaths("", "/api/v1#admin", "/api/v1#admin")
+		foundBase := false
 		for _, c := range candidates {
 			if len(c) > 0 && c[0] != '/' {
 				t.Errorf("fragment candidate %q does not start with '/'", c)
 			}
+			if c == "/api/v1" {
+				foundBase = true
+			}
+		}
+		if !foundBase {
+			t.Errorf("expected candidates to contain stripped base path '/api/v1', got %v", candidates)
 		}
 	})
 }
