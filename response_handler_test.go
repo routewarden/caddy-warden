@@ -475,6 +475,22 @@ func TestResponseHandler_FakeSuccessDecoy(t *testing.T) {
 		t.Errorf("expected git decoy, got: %s", rrGit.Body.String())
 	}
 
+	// Test .git with query parameters
+	reqGitQuery := httptest.NewRequest(http.MethodGet, "/.git?action=check", nil)
+	rrGitQuery := httptest.NewRecorder()
+	handler.ServeBlockedRequest(rrGitQuery, reqGitQuery)
+	if !strings.Contains(rrGitQuery.Body.String(), "ref: refs/heads/master") {
+		t.Errorf("expected git decoy for /.git with query string, got: %s", rrGitQuery.Body.String())
+	}
+
+	// Test bare /.git
+	reqGitBare := httptest.NewRequest(http.MethodGet, "/.git", nil)
+	rrGitBare := httptest.NewRecorder()
+	handler.ServeBlockedRequest(rrGitBare, reqGitBare)
+	if !strings.Contains(rrGitBare.Body.String(), "ref: refs/heads/master") {
+		t.Errorf("expected git decoy for bare /.git, got: %s", rrGitBare.Body.String())
+	}
+
 	// Test phpinfo decoy
 	reqPHP := httptest.NewRequest(http.MethodGet, "/phpinfo.php", nil)
 	rrPHP := httptest.NewRecorder()
@@ -558,6 +574,21 @@ func TestResponseHandler_Proxy(t *testing.T) {
 	handlerEmpty.ServeBlockedRequest(rrEmpty, req)
 	if rrEmpty.Code != http.StatusBadGateway {
 		t.Errorf("expected 502 for unconfigured proxy, got %d", rrEmpty.Code)
+	}
+
+	// 4. Test mirror mode proxy initialization
+	handlerMirror, errMirror := caddywarden.NewResponseHandler(&caddywarden.ResponseConfig{
+		Mode:     "mirror",
+		ProxyURL: "http://honeypot.local",
+	}, 0, "", false)
+	if errMirror != nil {
+		t.Fatalf("unexpected error for mirror mode: %v", errMirror)
+	}
+	handlerMirror.SetProxyHandlerForTest(proxy)
+	rrMirror := httptest.NewRecorder()
+	handlerMirror.ServeBlockedRequest(rrMirror, req)
+	if rrMirror.Code != http.StatusTeapot {
+		t.Errorf("expected 418 for mirror mode, got %d", rrMirror.Code)
 	}
 }
 
@@ -1012,6 +1043,10 @@ func TestResponseHandler_EffectiveStatusCode(t *testing.T) {
 		{"gzipbomb default zero", "gzipbomb", 0, false, http.StatusOK},
 		{"json custom 404", "json", http.StatusNotFound, false, http.StatusNotFound},
 		{"text default zero", "text", 0, false, http.StatusForbidden},
+		{"fake_success snake_case", "fake_success", 403, false, http.StatusOK},
+		{"rate_limit snake_case", "rate_limit", 403, false, http.StatusTooManyRequests},
+		{"silent_drop snake_case", "silent_drop", 403, false, 0},
+		{"gzip_bomb snake_case", "gzip_bomb", 0, false, http.StatusOK},
 	}
 
 	for _, tc := range tests {
@@ -1033,6 +1068,40 @@ func TestResponseHandler_EffectiveStatusCode(t *testing.T) {
 	var nilHandler *caddywarden.ResponseHandler
 	if got := nilHandler.EffectiveStatusCode(); got != http.StatusForbidden {
 		t.Errorf("expected 403 for nil handler, got %d", got)
+	}
+}
+
+func TestResponseHandler_SnakeCaseModes(t *testing.T) {
+	tests := []struct {
+		mode               string
+		expectedStatusCode int
+		checkBodyContains  string
+	}{
+		{"fake_success", http.StatusOK, "status"},
+		{"rate_limit", http.StatusTooManyRequests, "Too Many Requests"},
+		{"silent_drop", 0, ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.mode, func(t *testing.T) {
+			h, err := caddywarden.NewResponseHandler(&caddywarden.ResponseConfig{
+				Mode: tc.mode,
+			}, 0, "", false)
+			if err != nil {
+				t.Fatalf("NewResponseHandler error: %v", err)
+			}
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/blocked", nil)
+			h.ServeBlockedRequest(rec, req)
+
+			if tc.mode != "silent_drop" && rec.Code != tc.expectedStatusCode {
+				t.Errorf("expected status code %d for mode %s, got %d", tc.expectedStatusCode, tc.mode, rec.Code)
+			}
+			if tc.checkBodyContains != "" && !strings.Contains(rec.Body.String(), tc.checkBodyContains) {
+				t.Errorf("expected body to contain %q, got: %s", tc.checkBodyContains, rec.Body.String())
+			}
+		})
 	}
 }
 
