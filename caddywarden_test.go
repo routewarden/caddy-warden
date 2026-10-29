@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	caddywarden "github.com/routewarden/caddy-warden"
 )
@@ -2373,5 +2374,133 @@ func TestRouteWarden_BracketedIPv6AllowedIPs(t *testing.T) {
 	}))
 	if recDenied.Code != http.StatusForbidden {
 		t.Errorf("expected unallowed IPv6 accessing /.env to be blocked (403), got %d", recDenied.Code)
+	}
+}
+
+func TestRouteWarden_BlockAIBots(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+		BlockAIBots:           true,
+		AIBotProfile:          "train_only",
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	})
+
+	// 1. Normal Chrome Browser accessing benign path -> allowed (200)
+	reqBrowser := httptest.NewRequest(http.MethodGet, "/articles/post-1", nil)
+	reqBrowser.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+	recBrowser := httptest.NewRecorder()
+	_ = rw.ServeHTTP(recBrowser, reqBrowser, next)
+	if recBrowser.Code != http.StatusOK {
+		t.Errorf("expected normal browser to pass through (200), got %d", recBrowser.Code)
+	}
+
+	// 2. GPTBot on benign path -> blocked (403)
+	reqGPT := httptest.NewRequest(http.MethodGet, "/articles/post-1", nil)
+	reqGPT.Header.Set("User-Agent", "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.2; +https://openai.com/gptbot)")
+	recGPT := httptest.NewRecorder()
+	_ = rw.ServeHTTP(recGPT, reqGPT, next)
+	if recGPT.Code != http.StatusForbidden {
+		t.Errorf("expected GPTBot to be blocked (403), got %d", recGPT.Code)
+	}
+
+	// 3. Bytespider on benign path -> blocked (403)
+	reqByte := httptest.NewRequest(http.MethodGet, "/products/item-123", nil)
+	reqByte.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Bytespider; spider-feedback@bytedance.com)")
+	recByte := httptest.NewRecorder()
+	_ = rw.ServeHTTP(recByte, reqByte, next)
+	if recByte.Code != http.StatusForbidden {
+		t.Errorf("expected Bytespider to be blocked (403), got %d", recByte.Code)
+	}
+
+	// 4. PerplexityBot on train_only -> allowed (200)
+	reqPerp := httptest.NewRequest(http.MethodGet, "/articles/post-1", nil)
+	reqPerp.Header.Set("User-Agent", "Mozilla/5.0 (compatible; PerplexityBot/1.0; +https://perplexity.ai/perplexitybot)")
+	recPerp := httptest.NewRecorder()
+	_ = rw.ServeHTTP(recPerp, reqPerp, next)
+	if recPerp.Code != http.StatusOK {
+		t.Errorf("expected PerplexityBot to be allowed under train_only (200), got %d", recPerp.Code)
+	}
+
+	// 5. PerplexityBot on all profile -> blocked (403)
+	rwAll := &caddywarden.RouteWarden{
+		Enabled:      true,
+		BlockAIBots:  true,
+		AIBotProfile: "all",
+	}
+	_ = rwAll.Provision(caddy.Context{})
+	recPerpAll := httptest.NewRecorder()
+	_ = rwAll.ServeHTTP(recPerpAll, reqPerp, next)
+	if recPerpAll.Code != http.StatusForbidden {
+		t.Errorf("expected PerplexityBot to be blocked under 'all' profile (403), got %d", recPerpAll.Code)
+	}
+}
+
+func TestRouteWarden_CustomUserAgents(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:         true,
+		BlockUserAgents: []string{`(?i)ScraperBot`, `(?i)SpecialCrawler`},
+		AllowUserAgents: []string{`(?i)AllowedPartnerBot`},
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	})
+
+	// Blocked custom agent
+	reqBlocked := httptest.NewRequest(http.MethodGet, "/public/docs", nil)
+	reqBlocked.Header.Set("User-Agent", "MyCustomScraperBot/1.0")
+	recBlocked := httptest.NewRecorder()
+	_ = rw.ServeHTTP(recBlocked, reqBlocked, next)
+	if recBlocked.Code != http.StatusForbidden {
+		t.Errorf("expected custom scraper to be blocked (403), got %d", recBlocked.Code)
+	}
+
+	// Allowed custom agent
+	reqAllowed := httptest.NewRequest(http.MethodGet, "/public/docs", nil)
+	reqAllowed.Header.Set("User-Agent", "AllowedPartnerBot/2.0")
+	recAllowed := httptest.NewRecorder()
+	_ = rw.ServeHTTP(recAllowed, reqAllowed, next)
+	if recAllowed.Code != http.StatusOK {
+		t.Errorf("expected allowed agent to pass through (200), got %d", recAllowed.Code)
+	}
+}
+
+func TestRouteWarden_AIBot_CaddyfileParsing(t *testing.T) {
+	d := caddyfile.NewTestDispenser(`
+		routewarden {
+			block_ai_bots true
+			ai_bot_profile all
+			block_user_agents "(?i)CustomBadBot" "(?i)EvilCrawler"
+			allow_user_agents "(?i)TrustedBot"
+		}
+	`)
+	var rw caddywarden.RouteWarden
+	if err := rw.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile error: %v", err)
+	}
+
+	if !rw.BlockAIBots {
+		t.Error("expected BlockAIBots to be true")
+	}
+	if rw.AIBotProfile != "all" {
+		t.Errorf("expected AIBotProfile to be 'all', got %q", rw.AIBotProfile)
+	}
+	if len(rw.BlockUserAgents) != 2 || rw.BlockUserAgents[0] != "(?i)CustomBadBot" {
+		t.Errorf("unexpected BlockUserAgents: %v", rw.BlockUserAgents)
+	}
+	if len(rw.AllowUserAgents) != 1 || rw.AllowUserAgents[0] != "(?i)TrustedBot" {
+		t.Errorf("unexpected AllowUserAgents: %v", rw.AllowUserAgents)
 	}
 }

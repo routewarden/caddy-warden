@@ -132,3 +132,60 @@ func TestASNCaddyfileExplicitClear(t *testing.T) {
 		t.Fatalf("empty directive must explicitly clear inherited ASNs: %v", rw.AllowedASNs)
 	}
 }
+
+func TestASNBlockedMatching(t *testing.T) {
+	path := asnTestDB(t)
+	// AS64501 is blocked (8.8.8.0/24), AS64500 is allowed (8.0.0.0/8)
+	f, err := NewASNFilterEx([]string{"as64500"}, []string{"64501"}, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 8.8.8.8 belongs to AS64501 (blocked)
+	blocked, asn := f.IsBlocked("8.8.8.8")
+	if !blocked || asn != 64501 {
+		t.Errorf("expected 8.8.8.8 to be blocked with ASN 64501, got %v (%d)", blocked, asn)
+	}
+
+	// 8.1.2.3 belongs to AS64500 (allowed, not blocked)
+	blocked, _ = f.IsBlocked("8.1.2.3")
+	if blocked {
+		t.Errorf("expected 8.1.2.3 to not be blocked")
+	}
+
+	// Verify Caddyfile parsing for blocked_asns
+	var rw RouteWarden
+	d := caddyfile.NewTestDispenser("routewarden {\n blocked_asns AS64501\n asn_db " + path + "\n}")
+	if err := rw.UnmarshalCaddyfile(d); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
+	defer cancel()
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error { w.WriteHeader(200); return nil })
+
+	// Normal benign path (/public/index.html) from blocked ASN must be rejected!
+	req := httptest.NewRequest("GET", "http://example.com/public/index.html", nil)
+	req.RemoteAddr = "8.8.8.8:1234"
+	rec := httptest.NewRecorder()
+	if err := rw.ServeHTTP(rec, req, next); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != 403 {
+		t.Errorf("expected 403 for blocked ASN on benign path, got %d", rec.Code)
+	}
+
+	// From non-blocked ASN (8.1.2.3), benign path must pass through (200)
+	reqOK := httptest.NewRequest("GET", "http://example.com/public/index.html", nil)
+	reqOK.RemoteAddr = "8.1.2.3:1234"
+	recOK := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recOK, reqOK, next); err != nil {
+		t.Fatal(err)
+	}
+	if recOK.Code != 200 {
+		t.Errorf("expected 200 for allowed origin on benign path, got %d", recOK.Code)
+	}
+}

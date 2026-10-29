@@ -63,7 +63,12 @@ type RouteWarden struct {
 	BlockPatterns              []string        `json:"block_patterns,omitempty"`
 	AllowPatterns              []string        `json:"allow_patterns,omitempty"`
 	AllowedASNs                []string        `json:"allowed_asns,omitempty"`
+	BlockedASNs                []string        `json:"blocked_asns,omitempty"`
 	ASNDB                      string          `json:"asn_db,omitempty"`
+	BlockAIBots                bool            `json:"block_ai_bots,omitempty"`
+	AIBotProfile               string          `json:"ai_bot_profile,omitempty"`
+	BlockUserAgents            []string        `json:"block_user_agents,omitempty"`
+	AllowUserAgents            []string        `json:"allow_user_agents,omitempty"`
 	AllowedIPs                 []string        `json:"allowed_ips,omitempty"`
 	TrustedProxies             []string        `json:"trusted_proxies,omitempty"`
 	Methods                    []string        `json:"methods,omitempty"`
@@ -85,6 +90,8 @@ type RouteWarden struct {
 	compiledBlock   []*regexp.Regexp
 	compiledAllow   []*regexp.Regexp
 	compiledBody    []*regexp.Regexp
+	compiledBlockUA []*regexp.Regexp
+	compiledAllowUA []*regexp.Regexp
 	ipFilter        *IPFilter
 	responseHandler *ResponseHandler
 }
@@ -182,8 +189,18 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 			AllowPatternsSnake              []string              `json:"allow_patterns"`
 			AllowedASNs                     []string              `json:"allowedASNs"`
 			AllowedASNsSnake                []string              `json:"allowed_asns"`
+			BlockedASNs                     []string              `json:"blockedASNs"`
+			BlockedASNsSnake                []string              `json:"blocked_asns"`
 			ASNDB                           string                `json:"asnDB"`
 			ASNDBSnake                      string                `json:"asn_db"`
+			BlockAIBots                     *bool                 `json:"blockAIBots"`
+			BlockAIBotsSnake                *bool                 `json:"block_ai_bots"`
+			AIBotProfile                    *string               `json:"aiBotProfile"`
+			AIBotProfileSnake               *string               `json:"ai_bot_profile"`
+			BlockUserAgents                 []string              `json:"blockUserAgents"`
+			BlockUserAgentsSnake            []string              `json:"block_user_agents"`
+			AllowUserAgents                 []string              `json:"allowUserAgents"`
+			AllowUserAgentsSnake            []string              `json:"allow_user_agents"`
 			AllowedIPs                      []string              `json:"allowedIps"`
 			AllowedIPsSnake                 []string              `json:"allowed_ips"`
 			TrustedProxies                  []string              `json:"trustedProxies"`
@@ -251,9 +268,34 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		} else if len(scf.AllowedASNsSnake) > 0 {
 			fileCfg.AllowedASNs = scf.AllowedASNsSnake
 		}
+		if len(scf.BlockedASNs) > 0 {
+			fileCfg.BlockedASNs = scf.BlockedASNs
+		} else if len(scf.BlockedASNsSnake) > 0 {
+			fileCfg.BlockedASNs = scf.BlockedASNsSnake
+		}
 		fileCfg.ASNDB = scf.ASNDB
 		if scf.ASNDBSnake != "" {
 			fileCfg.ASNDB = scf.ASNDBSnake
+		}
+		if scf.BlockAIBots != nil {
+			fileCfg.BlockAIBots = *scf.BlockAIBots
+		} else if scf.BlockAIBotsSnake != nil {
+			fileCfg.BlockAIBots = *scf.BlockAIBotsSnake
+		}
+		if scf.AIBotProfile != nil {
+			fileCfg.AIBotProfile = *scf.AIBotProfile
+		} else if scf.AIBotProfileSnake != nil {
+			fileCfg.AIBotProfile = *scf.AIBotProfileSnake
+		}
+		if len(scf.BlockUserAgents) > 0 {
+			fileCfg.BlockUserAgents = scf.BlockUserAgents
+		} else if len(scf.BlockUserAgentsSnake) > 0 {
+			fileCfg.BlockUserAgents = scf.BlockUserAgentsSnake
+		}
+		if len(scf.AllowUserAgents) > 0 {
+			fileCfg.AllowUserAgents = scf.AllowUserAgents
+		} else if len(scf.AllowUserAgentsSnake) > 0 {
+			fileCfg.AllowUserAgents = scf.AllowUserAgentsSnake
 		}
 		if len(scf.AllowedIPs) > 0 {
 			fileCfg.AllowedIPs = scf.AllowedIPs
@@ -398,8 +440,23 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		if rw.AllowedASNs != nil {
 			fileCfg.AllowedASNs = rw.AllowedASNs
 		}
+		if rw.BlockedASNs != nil {
+			fileCfg.BlockedASNs = rw.BlockedASNs
+		}
 		if rw.ASNDB != "" {
 			fileCfg.ASNDB = rw.ASNDB
+		}
+		if rw.isExplicit("block_ai_bots") {
+			fileCfg.BlockAIBots = rw.BlockAIBots
+		}
+		if rw.AIBotProfile != "" {
+			fileCfg.AIBotProfile = rw.AIBotProfile
+		}
+		if len(rw.BlockUserAgents) > 0 {
+			fileCfg.BlockUserAgents = rw.BlockUserAgents
+		}
+		if len(rw.AllowUserAgents) > 0 {
+			fileCfg.AllowUserAgents = rw.AllowUserAgents
 		}
 		if len(rw.AllowedIPs) > 0 {
 			fileCfg.AllowedIPs = rw.AllowedIPs
@@ -569,13 +626,38 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		rw.compiledBody = append(rw.compiledBody, re)
 	}
 
+	// 3b. Compile User-Agent Block & Allow Patterns
+	rw.compiledBlockUA = make([]*regexp.Regexp, 0, len(rw.BlockUserAgents))
+	for _, p := range rw.BlockUserAgents {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		re, err := regexp.Compile(p)
+		if err != nil {
+			return fmt.Errorf("routewarden: invalid block_user_agents regex %q: %w", p, err)
+		}
+		rw.compiledBlockUA = append(rw.compiledBlockUA, re)
+	}
+
+	rw.compiledAllowUA = make([]*regexp.Regexp, 0, len(rw.AllowUserAgents))
+	for _, p := range rw.AllowUserAgents {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		re, err := regexp.Compile(p)
+		if err != nil {
+			return fmt.Errorf("routewarden: invalid allow_user_agents regex %q: %w", p, err)
+		}
+		rw.compiledAllowUA = append(rw.compiledAllowUA, re)
+	}
+
 	// 4. Initialize IP Filter
-	if len(rw.AllowedIPs) > 0 || len(rw.TrustedProxies) > 0 || len(rw.AllowedASNs) > 0 {
+	if len(rw.AllowedIPs) > 0 || len(rw.TrustedProxies) > 0 || len(rw.AllowedASNs) > 0 || len(rw.BlockedASNs) > 0 {
 		filter, err := NewIPFilter(rw.AllowedIPs, rw.TrustedProxies)
 		if err != nil {
 			return fmt.Errorf("routewarden: invalid ip filter config: %w", err)
 		}
-		filter.asn, err = NewASNFilter(rw.AllowedASNs, rw.ASNDB)
+		filter.asn, err = NewASNFilterEx(rw.AllowedASNs, rw.BlockedASNs, rw.ASNDB)
 		if err != nil {
 			return err
 		}
@@ -662,6 +744,80 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 		}
 		if allowed {
 			return next.ServeHTTP(w, req)
+		}
+	}
+
+	// Stage 1b: Blocked ASN check
+	if rw.ipFilter != nil {
+		if isBlockedASN, asnNum := rw.ipFilter.IsBlockedASN(req); isBlockedASN {
+			clientIP := rw.extractClientIP(req)
+			rw.logSecurityEvent(req, fmt.Sprintf("AS%d", asnNum), fmt.Sprintf("AS%d", asnNum), "asn_blocked")
+			if rw.logger != nil {
+				rw.logger.Warn("routewarden: blocked client from denied ASN",
+					zap.String("client_ip", clientIP),
+					zap.Uint32("asn", asnNum),
+				)
+			}
+			if rw.responseHandler != nil {
+				rw.responseHandler.ServeBlockedRequest(w, req)
+			} else {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte("Access Denied\n"))
+			}
+			return nil
+		}
+	}
+
+	// Stage 1c: User-Agent & AI Bot Inspection
+	ua := req.UserAgent()
+	uaAllowed := false
+	for _, re := range rw.compiledAllowUA {
+		if re.MatchString(ua) {
+			uaAllowed = true
+			break
+		}
+	}
+
+	if !uaAllowed {
+		uaBlocked := false
+		uaPattern := ""
+		uaReason := ""
+
+		for _, re := range rw.compiledBlockUA {
+			if re.MatchString(ua) {
+				uaBlocked = true
+				uaPattern = re.String()
+				uaReason = "user_agent_blocked"
+				break
+			}
+		}
+
+		if !uaBlocked && rw.BlockAIBots {
+			if matched, botType := MatchAIBot(ua, rw.AIBotProfile); matched {
+				uaBlocked = true
+				uaPattern = botType
+				uaReason = "ai_bot_blocked"
+			}
+		}
+
+		if uaBlocked {
+			clientIP := rw.extractClientIP(req)
+			rw.logSecurityEvent(req, ua, uaPattern, uaReason)
+			if rw.logger != nil {
+				rw.logger.Warn("routewarden: blocked bot or crawler user agent",
+					zap.String("client_ip", clientIP),
+					zap.String("user_agent", ua),
+					zap.String("pattern", uaPattern),
+					zap.String("reason", uaReason),
+				)
+			}
+			if rw.responseHandler != nil {
+				rw.responseHandler.ServeBlockedRequest(w, req)
+			} else {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte("Access Denied\n"))
+			}
+			return nil
 		}
 	}
 

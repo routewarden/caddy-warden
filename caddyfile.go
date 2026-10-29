@@ -113,12 +113,37 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					rw.AllowedASNs = []string{}
 				}
 				rw.AllowedASNs = append(rw.AllowedASNs, args...)
+			case "blocked_asns":
+				args := d.RemainingArgs()
+				if rw.BlockedASNs == nil {
+					rw.BlockedASNs = []string{}
+				}
+				rw.BlockedASNs = append(rw.BlockedASNs, args...)
 			case "asn_db":
 				args := d.RemainingArgs()
 				if len(args) != 1 {
 					return d.ArgErr()
 				}
 				rw.ASNDB = args[0]
+			case "block_ai_bots":
+				rw.BlockAIBots = parseBoolArg(d, true)
+			case "ai_bot_profile":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				rw.AIBotProfile = d.Val()
+			case "block_user_agents":
+				args := d.RemainingArgs()
+				if len(args) == 0 {
+					return d.ArgErr()
+				}
+				rw.BlockUserAgents = append(rw.BlockUserAgents, args...)
+			case "allow_user_agents":
+				args := d.RemainingArgs()
+				if len(args) == 0 {
+					return d.ArgErr()
+				}
+				rw.AllowUserAgents = append(rw.AllowUserAgents, args...)
 			case "allowed_ips":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
