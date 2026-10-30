@@ -2504,3 +2504,71 @@ func TestRouteWarden_AIBot_CaddyfileParsing(t *testing.T) {
 		t.Errorf("unexpected AllowUserAgents: %v", rw.AllowUserAgents)
 	}
 }
+
+func TestRouteWarden_HoneypotSpiderTrap(t *testing.T) {
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	rw := &caddywarden.RouteWarden{
+		Enabled:           true,
+		HoneypotTrapPaths: []string{"/.rw-bot-trap", "/hidden-spider-trap/"},
+		TrapBanDuration:   "1h",
+	}
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	next := &testHandler{}
+	clientIP := "198.51.100.42"
+
+	// 1. Initial request to safe page passes
+	req1 := httptest.NewRequest(http.MethodGet, "/public/about", nil)
+	req1.RemoteAddr = clientIP + ":12345"
+	rec1 := httptest.NewRecorder()
+	if err := rw.ServeHTTP(rec1, req1, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !next.handled {
+		t.Error("expected first safe request to pass")
+	}
+
+	// 2. Crawler requests hidden spider trap
+	next.handled = false
+	reqTrap := httptest.NewRequest(http.MethodGet, "/.rw-bot-trap", nil)
+	reqTrap.RemoteAddr = clientIP + ":12345"
+	recTrap := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recTrap, reqTrap, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recTrap.Code != http.StatusForbidden {
+		t.Errorf("expected trap request to be blocked with 403, got code %d handled %v", recTrap.Code, next.handled)
+	}
+
+	// 3. Subsequent request to safe page must now be blocked due to active ban!
+	next.handled = false
+	req2 := httptest.NewRequest(http.MethodGet, "/public/about", nil)
+	req2.RemoteAddr = clientIP + ":54321" // different ephemeral port, same IP
+	rec2 := httptest.NewRecorder()
+	if err := rw.ServeHTTP(rec2, req2, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || rec2.Code != http.StatusForbidden {
+		t.Errorf("expected banned client to be blocked on safe page, got code %d handled %v", rec2.Code, next.handled)
+	}
+
+	// 4. Test Caddyfile parsing
+	d := caddyfile.NewTestDispenser(`
+		routewarden {
+			honeypot_trap_paths "/.bait-trap" "/hidden/"
+			trap_ban_duration 2h
+		}
+	`)
+	var parsedRW caddywarden.RouteWarden
+	if err := parsedRW.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile error: %v", err)
+	}
+	if len(parsedRW.HoneypotTrapPaths) != 2 || parsedRW.HoneypotTrapPaths[0] != "/.bait-trap" {
+		t.Errorf("unexpected HoneypotTrapPaths: %v", parsedRW.HoneypotTrapPaths)
+	}
+	if parsedRW.TrapBanDuration != "2h" {
+		t.Errorf("expected TrapBanDuration '2h', got %q", parsedRW.TrapBanDuration)
+	}
+}

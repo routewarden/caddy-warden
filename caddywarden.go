@@ -69,6 +69,8 @@ type RouteWarden struct {
 	AIBotProfile               string          `json:"ai_bot_profile,omitempty"`
 	BlockUserAgents            []string        `json:"block_user_agents,omitempty"`
 	AllowUserAgents            []string        `json:"allow_user_agents,omitempty"`
+	HoneypotTrapPaths          []string        `json:"honeypot_trap_paths,omitempty"`
+	TrapBanDuration            string          `json:"trap_ban_duration,omitempty"`
 	AllowedIPs                 []string        `json:"allowed_ips,omitempty"`
 	TrustedProxies             []string        `json:"trusted_proxies,omitempty"`
 	Methods                    []string        `json:"methods,omitempty"`
@@ -92,8 +94,10 @@ type RouteWarden struct {
 	compiledBody    []*regexp.Regexp
 	compiledBlockUA []*regexp.Regexp
 	compiledAllowUA []*regexp.Regexp
-	ipFilter        *IPFilter
-	responseHandler *ResponseHandler
+	ipFilter          *IPFilter
+	responseHandler   *ResponseHandler
+	banTable          *BanTable
+	parsedBanDuration time.Duration
 }
 
 func (rw *RouteWarden) markExplicit(field string) {
@@ -201,6 +205,10 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 			BlockUserAgentsSnake            []string              `json:"block_user_agents"`
 			AllowUserAgents                 []string              `json:"allowUserAgents"`
 			AllowUserAgentsSnake            []string              `json:"allow_user_agents"`
+			HoneypotTrapPaths               []string              `json:"honeypotTrapPaths"`
+			HoneypotTrapPathsSnake          []string              `json:"honeypot_trap_paths"`
+			TrapBanDuration                 *string               `json:"trapBanDuration"`
+			TrapBanDurationSnake            *string               `json:"trap_ban_duration"`
 			AllowedIPs                      []string              `json:"allowedIps"`
 			AllowedIPsSnake                 []string              `json:"allowed_ips"`
 			TrustedProxies                  []string              `json:"trustedProxies"`
@@ -296,6 +304,16 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 			fileCfg.AllowUserAgents = scf.AllowUserAgents
 		} else if len(scf.AllowUserAgentsSnake) > 0 {
 			fileCfg.AllowUserAgents = scf.AllowUserAgentsSnake
+		}
+		if len(scf.HoneypotTrapPaths) > 0 {
+			fileCfg.HoneypotTrapPaths = scf.HoneypotTrapPaths
+		} else if len(scf.HoneypotTrapPathsSnake) > 0 {
+			fileCfg.HoneypotTrapPaths = scf.HoneypotTrapPathsSnake
+		}
+		if scf.TrapBanDuration != nil {
+			fileCfg.TrapBanDuration = *scf.TrapBanDuration
+		} else if scf.TrapBanDurationSnake != nil {
+			fileCfg.TrapBanDuration = *scf.TrapBanDurationSnake
 		}
 		if len(scf.AllowedIPs) > 0 {
 			fileCfg.AllowedIPs = scf.AllowedIPs
@@ -457,6 +475,12 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		}
 		if len(rw.AllowUserAgents) > 0 {
 			fileCfg.AllowUserAgents = rw.AllowUserAgents
+		}
+		if len(rw.HoneypotTrapPaths) > 0 {
+			fileCfg.HoneypotTrapPaths = rw.HoneypotTrapPaths
+		}
+		if rw.TrapBanDuration != "" {
+			fileCfg.TrapBanDuration = rw.TrapBanDuration
 		}
 		if len(rw.AllowedIPs) > 0 {
 			fileCfg.AllowedIPs = rw.AllowedIPs
@@ -673,6 +697,12 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 	respHandler.SetLogger(rw.logger, rw.Debug)
 	rw.responseHandler = respHandler
 
+	// 6. Initialize Honeypot Spider Trap Ban Table
+	rw.parsedBanDuration = ParseBanDuration(rw.TrapBanDuration)
+	if len(rw.HoneypotTrapPaths) > 0 {
+		rw.banTable = NewBanTable(10000)
+	}
+
 	if rw.Debug && rw.logger != nil {
 		rw.logger.Debug("routewarden: provisioned successfully",
 			zap.Int("compiled_block_patterns", len(rw.compiledBlock)),
@@ -768,7 +798,25 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 		}
 	}
 
-	// Stage 1c: User-Agent & AI Bot Inspection
+	// Stage 1c: Active Ban Table Check
+	clientIP := rw.extractClientIP(req)
+	if rw.banTable != nil && rw.banTable.IsBanned(clientIP) {
+		rw.logSecurityEvent(req, clientIP, "active_ban", "ip_banned")
+		if rw.logger != nil {
+			rw.logger.Warn("routewarden: blocked client from active ban table",
+				zap.String("client_ip", clientIP),
+			)
+		}
+		if rw.responseHandler != nil {
+			rw.responseHandler.ServeBlockedRequest(w, req)
+		} else {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte("Access Denied\n"))
+		}
+		return nil
+	}
+
+	// Stage 1d: User-Agent & AI Bot Inspection
 	ua := req.UserAgent()
 	uaAllowed := false
 	for _, re := range rw.compiledAllowUA {
@@ -828,6 +876,36 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 			zap.Strings("candidate_paths", candidatePaths),
 			zap.String("client_ip", req.RemoteAddr),
 		)
+	}
+
+	// Stage 2b: Honeypot Spider Trap Check
+	if len(rw.HoneypotTrapPaths) > 0 {
+		for _, candPath := range candidatePaths {
+			for _, trapPath := range rw.HoneypotTrapPaths {
+				cleanTrap := strings.TrimSpace(trapPath)
+				if cleanTrap != "" && (candPath == cleanTrap || (strings.HasSuffix(cleanTrap, "/") && strings.HasPrefix(candPath, cleanTrap))) {
+					if rw.banTable != nil {
+						rw.banTable.Ban(clientIP, rw.parsedBanDuration)
+					}
+					rw.logSecurityEvent(req, candPath, cleanTrap, "honeypot_trap_triggered")
+					if rw.logger != nil {
+						rw.logger.Warn("routewarden: honeypot spider trap triggered, client IP banned",
+							zap.String("client_ip", clientIP),
+							zap.String("trap_path", cleanTrap),
+							zap.String("matched_path", candPath),
+							zap.Duration("ban_duration", rw.parsedBanDuration),
+						)
+					}
+					if rw.responseHandler != nil {
+						rw.responseHandler.ServeBlockedRequest(w, req)
+					} else {
+						w.WriteHeader(http.StatusForbidden)
+						_, _ = w.Write([]byte("Access Denied\n"))
+					}
+					return nil
+				}
+			}
+		}
 	}
 
 	// Stage 3: Allow Patterns (Explicit overrides)

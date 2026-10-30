@@ -144,6 +144,17 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				rw.AllowUserAgents = append(rw.AllowUserAgents, args...)
+			case "honeypot_trap_paths", "honeypot_trap_path":
+				args := d.RemainingArgs()
+				if len(args) == 0 {
+					return d.ArgErr()
+				}
+				rw.HoneypotTrapPaths = append(rw.HoneypotTrapPaths, args...)
+			case "trap_ban_duration":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				rw.TrapBanDuration = d.Val()
 			case "allowed_ips":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
