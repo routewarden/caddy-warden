@@ -74,6 +74,8 @@ type RouteWarden struct {
 	HoneypotTrapPaths          []string        `json:"honeypot_trap_paths,omitempty"`
 	TrapBanDuration            string          `json:"trap_ban_duration,omitempty"`
 	VerifySearchEngineBots     bool            `json:"verify_search_engine_bots,omitempty"`
+	DetectBrowserImpersonation bool            `json:"detect_browser_impersonation,omitempty"`
+	BlockScriptClients         bool            `json:"block_script_clients,omitempty"`
 	AllowedIPs                 []string        `json:"allowed_ips,omitempty"`
 	TrustedProxies             []string        `json:"trusted_proxies,omitempty"`
 	Methods                    []string        `json:"methods,omitempty"`
@@ -215,6 +217,10 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 			TrapBanDurationSnake            *string               `json:"trap_ban_duration"`
 			VerifySearchEngineBots          *bool                 `json:"verifySearchEngineBots"`
 			VerifySearchEngineBotsSnake     *bool                 `json:"verify_search_engine_bots"`
+			DetectBrowserImpersonation      *bool                 `json:"detectBrowserImpersonation"`
+			DetectBrowserImpersonationSnake *bool                 `json:"detect_browser_impersonation"`
+			BlockScriptClients              *bool                 `json:"blockScriptClients"`
+			BlockScriptClientsSnake         *bool                 `json:"block_script_clients"`
 			AllowedIPs                      []string              `json:"allowedIps"`
 			AllowedIPsSnake                 []string              `json:"allowed_ips"`
 			TrustedProxies                  []string              `json:"trustedProxies"`
@@ -325,6 +331,16 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 			fileCfg.VerifySearchEngineBots = *scf.VerifySearchEngineBots
 		} else if scf.VerifySearchEngineBotsSnake != nil {
 			fileCfg.VerifySearchEngineBots = *scf.VerifySearchEngineBotsSnake
+		}
+		if scf.DetectBrowserImpersonation != nil {
+			fileCfg.DetectBrowserImpersonation = *scf.DetectBrowserImpersonation
+		} else if scf.DetectBrowserImpersonationSnake != nil {
+			fileCfg.DetectBrowserImpersonation = *scf.DetectBrowserImpersonationSnake
+		}
+		if scf.BlockScriptClients != nil {
+			fileCfg.BlockScriptClients = *scf.BlockScriptClients
+		} else if scf.BlockScriptClientsSnake != nil {
+			fileCfg.BlockScriptClients = *scf.BlockScriptClientsSnake
 		}
 		if len(scf.AllowedIPs) > 0 {
 			fileCfg.AllowedIPs = scf.AllowedIPs
@@ -495,6 +511,12 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		}
 		if rw.isExplicit("verify_search_engine_bots") || (!hasExplicit && rw.VerifySearchEngineBots) {
 			fileCfg.VerifySearchEngineBots = rw.VerifySearchEngineBots
+		}
+		if rw.isExplicit("detect_browser_impersonation") || (!hasExplicit && rw.DetectBrowserImpersonation) {
+			fileCfg.DetectBrowserImpersonation = rw.DetectBrowserImpersonation
+		}
+		if rw.isExplicit("block_script_clients") || (!hasExplicit && rw.BlockScriptClients) {
+			fileCfg.BlockScriptClients = rw.BlockScriptClients
 		}
 		if len(rw.AllowedIPs) > 0 {
 			fileCfg.AllowedIPs = rw.AllowedIPs
@@ -901,6 +923,22 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 				uaBlocked = true
 				uaPattern = botType
 				uaReason = "ai_bot_blocked"
+			}
+		}
+
+		if !uaBlocked && rw.DetectBrowserImpersonation {
+			if isSpoofed, reason := DetectBrowserImpersonation(ua, req.Header); isSpoofed {
+				uaBlocked = true
+				uaPattern = reason
+				uaReason = "browser_spoofed"
+			}
+		}
+
+		if !uaBlocked && rw.BlockScriptClients {
+			if isScript, clientType := DetectScriptClient(ua, req.Header); isScript {
+				uaBlocked = true
+				uaPattern = clientType
+				uaReason = "script_client_blocked"
 			}
 		}
 

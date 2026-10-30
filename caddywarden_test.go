@@ -2643,3 +2643,82 @@ func TestRouteWarden_SearchEngineImpersonation(t *testing.T) {
 	}
 }
 
+func TestRouteWarden_BrowserImpersonationAndScriptClients(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:                    true,
+		DetectBrowserImpersonation: true,
+		BlockScriptClients:         true,
+		Methods:                    []string{"GET"},
+		Response:                   caddywarden.DefaultResponseConfig(),
+	}
+
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	next := &testHandler{}
+	chromeUA := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+
+	// 1. Spoofed Chrome (missing Accept-Language) -> 403
+	reqSpoofed := httptest.NewRequest(http.MethodGet, "/public/docs", nil)
+	reqSpoofed.Header.Set("User-Agent", chromeUA)
+	reqSpoofed.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	recSpoofed := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recSpoofed, reqSpoofed, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recSpoofed.Code != http.StatusForbidden {
+		t.Errorf("expected spoofed Chrome to be blocked with 403, got code %d handled %v", recSpoofed.Code, next.handled)
+	}
+
+	// 2. Legitimate Chrome with companion headers -> 200
+	next.handled = false
+	reqLegit := httptest.NewRequest(http.MethodGet, "/public/docs", nil)
+	reqLegit.Header.Set("User-Agent", chromeUA)
+	reqLegit.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	reqLegit.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	reqLegit.Header.Set("Sec-CH-UA-Platform", `"Windows"`)
+	reqLegit.Header.Set("Sec-Fetch-Site", "none")
+	reqLegit.Header.Set("Sec-Fetch-Mode", "navigate")
+	reqLegit.Header.Set("Sec-Fetch-Dest", "document")
+	recLegit := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recLegit, reqLegit, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !next.handled || recLegit.Code != http.StatusOK {
+		t.Errorf("expected legitimate Chrome to pass, got code %d handled %v", recLegit.Code, next.handled)
+	}
+
+	// 3. Script client (python-requests) -> 403
+	next.handled = false
+	reqScript := httptest.NewRequest(http.MethodGet, "/public/docs", nil)
+	reqScript.Header.Set("User-Agent", "python-requests/2.31.0")
+	recScript := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recScript, reqScript, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recScript.Code != http.StatusForbidden {
+		t.Errorf("expected python-requests to be blocked with 403, got code %d handled %v", recScript.Code, next.handled)
+	}
+
+	// 4. Caddyfile parsing for new directives
+	d := caddyfile.NewTestDispenser(`
+		routewarden {
+			detect_browser_impersonation true
+			block_script_clients true
+		}
+	`)
+	var parsedRW caddywarden.RouteWarden
+	if err := parsedRW.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile error: %v", err)
+	}
+	if !parsedRW.DetectBrowserImpersonation {
+		t.Errorf("expected DetectBrowserImpersonation=true from Caddyfile")
+	}
+	if !parsedRW.BlockScriptClients {
+		t.Errorf("expected BlockScriptClients=true from Caddyfile")
+	}
+}
+
+

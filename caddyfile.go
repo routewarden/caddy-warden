@@ -165,6 +165,26 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					val = parsed
 				}
 				rw.VerifySearchEngineBots = val
+			case "detect_browser_impersonation":
+				val := true
+				if d.NextArg() {
+					parsed, err := strconv.ParseBool(d.Val())
+					if err != nil {
+						return d.Errf("invalid boolean value for detect_browser_impersonation: %s", d.Val())
+					}
+					val = parsed
+				}
+				rw.DetectBrowserImpersonation = val
+			case "block_script_clients":
+				val := true
+				if d.NextArg() {
+					parsed, err := strconv.ParseBool(d.Val())
+					if err != nil {
+						return d.Errf("invalid boolean value for block_script_clients: %s", d.Val())
+					}
+					val = parsed
+				}
+				rw.BlockScriptClients = val
 			case "allowed_ips":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
