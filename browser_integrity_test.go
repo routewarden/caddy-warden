@@ -10,8 +10,11 @@ func TestDetectBrowserImpersonation(t *testing.T) {
 
 	// 1. Legitimate browser with full companion headers
 	validHeaders := http.Header{}
+	validHeaders.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	validHeaders.Set("Accept-Language", "en-US,en;q=0.9")
 	validHeaders.Set("Accept-Encoding", "gzip, deflate, br")
+	validHeaders.Set("Sec-CH-UA", `"Chromium";v="128", "Google Chrome";v="128"`)
+	validHeaders.Set("Sec-CH-UA-Mobile", "?0")
 	validHeaders.Set("Sec-CH-UA-Platform", `"Windows"`)
 	validHeaders.Set("Sec-Fetch-Site", "none")
 	validHeaders.Set("Sec-Fetch-Mode", "navigate")
@@ -38,7 +41,23 @@ func TestDetectBrowserImpersonation(t *testing.T) {
 		t.Errorf("expected missing_accept_encoding, got isSpoofed=%v, reason=%s", isSpoofed, reason)
 	}
 
-	// 4. Platform mismatch: Windows in UA, but Linux in Sec-CH-UA-Platform
+	// 4. Missing Sec-CH-UA on modern Chrome 128
+	missingSecCHUA := validHeaders.Clone()
+	missingSecCHUA.Del("Sec-CH-UA")
+	isSpoofed, reason = DetectBrowserImpersonation(chromeUA, missingSecCHUA)
+	if !isSpoofed || reason != "missing_sec_ch_ua" {
+		t.Errorf("expected missing_sec_ch_ua, got isSpoofed=%v, reason=%s", isSpoofed, reason)
+	}
+
+	// 5. Mobile mismatch: Desktop Windows UA with Sec-CH-UA-Mobile: ?1
+	mobileMismatch := validHeaders.Clone()
+	mobileMismatch.Set("Sec-CH-UA-Mobile", "?1")
+	isSpoofed, reason = DetectBrowserImpersonation(chromeUA, mobileMismatch)
+	if !isSpoofed || reason != "sec_ch_ua_mobile_mismatch" {
+		t.Errorf("expected sec_ch_ua_mobile_mismatch, got isSpoofed=%v, reason=%s", isSpoofed, reason)
+	}
+
+	// 6. Platform mismatch: Windows in UA, but Linux in Sec-CH-UA-Platform
 	mismatchHeaders := validHeaders.Clone()
 	mismatchHeaders.Set("Sec-CH-UA-Platform", `"Linux"`)
 	isSpoofed, reason = DetectBrowserImpersonation(chromeUA, mismatchHeaders)
@@ -46,7 +65,7 @@ func TestDetectBrowserImpersonation(t *testing.T) {
 		t.Errorf("expected sec_ch_ua_platform_mismatch, got isSpoofed=%v, reason=%s", isSpoofed, reason)
 	}
 
-	// 5. Chrome 128 missing Sec-Fetch-* headers
+	// 7. Chrome 128 missing Sec-Fetch-* headers
 	noFetchHeaders := validHeaders.Clone()
 	noFetchHeaders.Del("Sec-Fetch-Site")
 	noFetchHeaders.Del("Sec-Fetch-Mode")
@@ -105,6 +124,18 @@ func TestDetectScriptClient(t *testing.T) {
 		{
 			name:       "curl",
 			ua:         "curl/8.1.2",
+			headers:    http.Header{},
+			wantDetect: true,
+		},
+		{
+			name:       "guzzle",
+			ua:         "GuzzleHttp/7",
+			headers:    http.Header{},
+			wantDetect: true,
+		},
+		{
+			name:       "reqwest",
+			ua:         "reqwest/0.11.22",
 			headers:    http.Header{},
 			wantDetect: true,
 		},
