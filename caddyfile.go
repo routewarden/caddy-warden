@@ -155,6 +155,16 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				rw.TrapBanDuration = d.Val()
+			case "verify_search_engine_bots":
+				val := true
+				if d.NextArg() {
+					parsed, err := strconv.ParseBool(d.Val())
+					if err != nil {
+						return d.Errf("invalid boolean value for verify_search_engine_bots: %s", d.Val())
+					}
+					val = parsed
+				}
+				rw.VerifySearchEngineBots = val
 			case "allowed_ips":
 				args := d.RemainingArgs()
 				if len(args) == 0 {

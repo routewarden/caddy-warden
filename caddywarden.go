@@ -1,15 +1,17 @@
 package caddywarden
 
 import (
-	"slices"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -71,6 +73,7 @@ type RouteWarden struct {
 	AllowUserAgents            []string        `json:"allow_user_agents,omitempty"`
 	HoneypotTrapPaths          []string        `json:"honeypot_trap_paths,omitempty"`
 	TrapBanDuration            string          `json:"trap_ban_duration,omitempty"`
+	VerifySearchEngineBots     bool            `json:"verify_search_engine_bots,omitempty"`
 	AllowedIPs                 []string        `json:"allowed_ips,omitempty"`
 	TrustedProxies             []string        `json:"trusted_proxies,omitempty"`
 	Methods                    []string        `json:"methods,omitempty"`
@@ -98,6 +101,7 @@ type RouteWarden struct {
 	responseHandler   *ResponseHandler
 	banTable          *BanTable
 	parsedBanDuration time.Duration
+	fcrdnsVerifier    *FCrDNSVerifier
 }
 
 func (rw *RouteWarden) markExplicit(field string) {
@@ -209,6 +213,8 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 			HoneypotTrapPathsSnake          []string              `json:"honeypot_trap_paths"`
 			TrapBanDuration                 *string               `json:"trapBanDuration"`
 			TrapBanDurationSnake            *string               `json:"trap_ban_duration"`
+			VerifySearchEngineBots          *bool                 `json:"verifySearchEngineBots"`
+			VerifySearchEngineBotsSnake     *bool                 `json:"verify_search_engine_bots"`
 			AllowedIPs                      []string              `json:"allowedIps"`
 			AllowedIPsSnake                 []string              `json:"allowed_ips"`
 			TrustedProxies                  []string              `json:"trustedProxies"`
@@ -314,6 +320,11 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 			fileCfg.TrapBanDuration = *scf.TrapBanDuration
 		} else if scf.TrapBanDurationSnake != nil {
 			fileCfg.TrapBanDuration = *scf.TrapBanDurationSnake
+		}
+		if scf.VerifySearchEngineBots != nil {
+			fileCfg.VerifySearchEngineBots = *scf.VerifySearchEngineBots
+		} else if scf.VerifySearchEngineBotsSnake != nil {
+			fileCfg.VerifySearchEngineBots = *scf.VerifySearchEngineBotsSnake
 		}
 		if len(scf.AllowedIPs) > 0 {
 			fileCfg.AllowedIPs = scf.AllowedIPs
@@ -481,6 +492,9 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		}
 		if rw.TrapBanDuration != "" {
 			fileCfg.TrapBanDuration = rw.TrapBanDuration
+		}
+		if rw.isExplicit("verify_search_engine_bots") || (!hasExplicit && rw.VerifySearchEngineBots) {
+			fileCfg.VerifySearchEngineBots = rw.VerifySearchEngineBots
 		}
 		if len(rw.AllowedIPs) > 0 {
 			fileCfg.AllowedIPs = rw.AllowedIPs
@@ -703,6 +717,11 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		rw.banTable = NewBanTable(10000)
 	}
 
+	// 7. Initialize Search Engine FCrDNS Verifier
+	if rw.VerifySearchEngineBots {
+		rw.fcrdnsVerifier = NewFCrDNSVerifier(6*time.Hour, 500*time.Millisecond)
+	}
+
 	if rw.Debug && rw.logger != nil {
 		rw.logger.Debug("routewarden: provisioned successfully",
 			zap.Int("compiled_block_patterns", len(rw.compiledBlock)),
@@ -729,6 +748,17 @@ func (rw *RouteWarden) Validate() error {
 		}
 	}
 	return nil
+}
+
+// SetFCrDNSLookupFuncs overrides the DNS lookup functions for testing purposes.
+func (rw *RouteWarden) SetFCrDNSLookupFuncs(
+	lookupAddr func(ctx context.Context, addr string) ([]string, error),
+	lookupIP func(ctx context.Context, host string) ([]net.IP, error),
+) {
+	if rw.fcrdnsVerifier != nil {
+		rw.fcrdnsVerifier.lookupAddr = lookupAddr
+		rw.fcrdnsVerifier.lookupIP = lookupIP
+	}
 }
 
 func (rw *RouteWarden) extractClientIP(req *http.Request) string {
@@ -823,6 +853,32 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 		if re.MatchString(ua) {
 			uaAllowed = true
 			break
+		}
+	}
+
+	if !uaAllowed {
+		// Search engine bot impersonation verification (FCrDNS)
+		if rw.VerifySearchEngineBots && rw.fcrdnsVerifier != nil {
+			if claimsBot, engine := DetectSearchEngineBot(ua); claimsBot {
+				if !rw.fcrdnsVerifier.Verify(req.Context(), clientIP, engine) {
+					rw.logSecurityEvent(req, ua, string(engine)+"_spoofed", "search_engine_spoofed")
+					if rw.logger != nil {
+						rw.logger.Warn("routewarden: blocked spoofed search engine bot",
+							zap.String("client_ip", clientIP),
+							zap.String("user_agent", ua),
+							zap.String("claimed_engine", string(engine)),
+						)
+					}
+					if rw.responseHandler != nil {
+						rw.responseHandler.ServeBlockedRequest(w, req)
+					} else {
+						w.WriteHeader(http.StatusForbidden)
+						_, _ = w.Write([]byte("Access Denied\n"))
+					}
+					return nil
+				}
+				uaAllowed = true
+			}
 		}
 	}
 

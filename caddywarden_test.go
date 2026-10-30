@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -2572,3 +2573,73 @@ func TestRouteWarden_HoneypotSpiderTrap(t *testing.T) {
 		t.Errorf("expected TrapBanDuration '2h', got %q", parsedRW.TrapBanDuration)
 	}
 }
+
+func TestRouteWarden_SearchEngineImpersonation(t *testing.T) {
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	rw := &caddywarden.RouteWarden{
+		Enabled:                true,
+		EnableDefaultPatterns:  false,
+		VerifySearchEngineBots: true,
+		BlockAIBots:            true,
+	}
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	rw.SetFCrDNSLookupFuncs(
+		func(ctx context.Context, addr string) ([]string, error) {
+			if addr == "66.249.66.1" {
+				return []string{"crawl-66-249-66-1.googlebot.com."}, nil
+			}
+			return []string{"attacker.vps.com."}, nil
+		},
+		func(ctx context.Context, host string) ([]net.IP, error) {
+			if host == "crawl-66-249-66-1.googlebot.com" {
+				return []net.IP{net.ParseIP("66.249.66.1")}, nil
+			}
+			return []net.IP{net.ParseIP("198.51.100.99")}, nil
+		},
+	)
+
+	next := &testHandler{}
+
+	// 1. Legitimate Googlebot
+	reqLegit := httptest.NewRequest(http.MethodGet, "/public/docs", nil)
+	reqLegit.RemoteAddr = "66.249.66.1:1234"
+	reqLegit.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)")
+	recLegit := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recLegit, reqLegit, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !next.handled || recLegit.Code != http.StatusOK {
+		t.Errorf("expected genuine Googlebot to pass with 200, got code %d handled %v", recLegit.Code, next.handled)
+	}
+
+	// 2. Spoofed Googlebot from attacker IP
+	next.handled = false
+	reqSpoofed := httptest.NewRequest(http.MethodGet, "/public/docs", nil)
+	reqSpoofed.RemoteAddr = "198.51.100.99:5432"
+	reqSpoofed.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)")
+	recSpoofed := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recSpoofed, reqSpoofed, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recSpoofed.Code != http.StatusForbidden {
+		t.Errorf("expected spoofed Googlebot to be blocked with 403, got code %d handled %v", recSpoofed.Code, next.handled)
+	}
+
+	// 3. Caddyfile directive parsing
+	d := caddyfile.NewTestDispenser(`
+		routewarden {
+			verify_search_engine_bots true
+		}
+	`)
+	var parsedRW caddywarden.RouteWarden
+	if err := parsedRW.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile error: %v", err)
+	}
+	if !parsedRW.VerifySearchEngineBots {
+		t.Errorf("expected VerifySearchEngineBots=true from Caddyfile")
+	}
+}
+
