@@ -67,6 +67,8 @@ type RouteWarden struct {
 	AllowedASNs                []string        `json:"allowed_asns,omitempty"`
 	BlockedASNs                []string        `json:"blocked_asns,omitempty"`
 	ASNDB                      string          `json:"asn_db,omitempty"`
+	BotDefenseLevel            string          `json:"bot_defense_level,omitempty"`
+	BotDefenseLevelCamel       string          `json:"botDefenseLevel,omitempty"`
 	BlockAIBots                bool            `json:"block_ai_bots,omitempty"`
 	AIBotProfile               string          `json:"ai_bot_profile,omitempty"`
 	BlockUserAgents            []string        `json:"block_user_agents,omitempty"`
@@ -203,6 +205,8 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 			BlockedASNsSnake                []string              `json:"blocked_asns"`
 			ASNDB                           string                `json:"asnDB"`
 			ASNDBSnake                      string                `json:"asn_db"`
+			BotDefenseLevel                 *string               `json:"botDefenseLevel"`
+			BotDefenseLevelSnake            *string               `json:"bot_defense_level"`
 			BlockAIBots                     *bool                 `json:"blockAIBots"`
 			BlockAIBotsSnake                *bool                 `json:"block_ai_bots"`
 			AIBotProfile                    *string               `json:"aiBotProfile"`
@@ -296,6 +300,14 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		fileCfg.ASNDB = scf.ASNDB
 		if scf.ASNDBSnake != "" {
 			fileCfg.ASNDB = scf.ASNDBSnake
+		}
+		if scf.BotDefenseLevel != nil {
+			fileCfg.BotDefenseLevel = *scf.BotDefenseLevel
+		} else if scf.BotDefenseLevelSnake != nil {
+			fileCfg.BotDefenseLevel = *scf.BotDefenseLevelSnake
+		}
+		if fileCfg.BotDefenseLevel != "" {
+			applyBotDefenseLevel(fileCfg.BotDefenseLevel, &fileCfg.BlockAIBots, &fileCfg.AIBotProfile, &fileCfg.DetectBrowserImpersonation, &fileCfg.BlockScriptClients, &fileCfg.VerifySearchEngineBots)
 		}
 		if scf.BlockAIBots != nil {
 			fileCfg.BlockAIBots = *scf.BlockAIBots
@@ -491,6 +503,14 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		if rw.ASNDB != "" {
 			fileCfg.ASNDB = rw.ASNDB
 		}
+		if rw.isExplicit("bot_defense_level") || rw.isExplicit("botDefenseLevel") || rw.BotDefenseLevel != "" || rw.BotDefenseLevelCamel != "" {
+			lvl := rw.BotDefenseLevel
+			if lvl == "" {
+				lvl = rw.BotDefenseLevelCamel
+			}
+			fileCfg.BotDefenseLevel = lvl
+			applyBotDefenseLevel(lvl, &fileCfg.BlockAIBots, &fileCfg.AIBotProfile, &fileCfg.DetectBrowserImpersonation, &fileCfg.BlockScriptClients, &fileCfg.VerifySearchEngineBots)
+		}
 		if rw.isExplicit("block_ai_bots") {
 			fileCfg.BlockAIBots = rw.BlockAIBots
 		}
@@ -582,6 +602,14 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		fileCfg.logger = rw.logger
 		fileCfg.ConfigFile = rw.ConfigFile
 		*rw = fileCfg
+	} else {
+		lvl := rw.BotDefenseLevel
+		if lvl == "" {
+			lvl = rw.BotDefenseLevelCamel
+		}
+		if lvl != "" {
+			rw.applyBotDefense(lvl)
+		}
 	}
 
 	if rw.Response == nil {
@@ -1354,4 +1382,106 @@ func (b *bodyReadCloser) Close() error {
 		return b.Closer.Close()
 	}
 	return nil
+}
+
+func applyBotDefenseLevel(level string, blockAIBots *bool, aiBotProfile *string, detectBrowser *bool, blockScripts *bool, verifySearch *bool) {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "light", "relaxed":
+		*blockAIBots = true
+		if *aiBotProfile == "" {
+			*aiBotProfile = "train_only"
+		}
+		*blockScripts = true
+		*verifySearch = true
+	case "standard", "moderate":
+		*blockAIBots = true
+		if *aiBotProfile == "" {
+			*aiBotProfile = "train_only"
+		}
+		*blockScripts = true
+		*detectBrowser = true
+		*verifySearch = true
+	case "strict":
+		*blockAIBots = true
+		if *aiBotProfile == "" {
+			*aiBotProfile = "all"
+		}
+		*blockScripts = true
+		*detectBrowser = true
+		*verifySearch = true
+	case "aggressive", "paranoia":
+		*blockAIBots = true
+		if *aiBotProfile == "" {
+			*aiBotProfile = "aggressive"
+		}
+		*blockScripts = true
+		*detectBrowser = true
+		*verifySearch = true
+	}
+}
+
+func (rw *RouteWarden) applyBotDefense(level string) {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "light", "relaxed":
+		if !rw.isExplicit("block_ai_bots") {
+			rw.BlockAIBots = true
+		}
+		if !rw.isExplicit("ai_bot_profile") && rw.AIBotProfile == "" {
+			rw.AIBotProfile = "train_only"
+		}
+		if !rw.isExplicit("block_script_clients") {
+			rw.BlockScriptClients = true
+		}
+		if !rw.isExplicit("verify_search_engine_bots") {
+			rw.VerifySearchEngineBots = true
+		}
+	case "standard", "moderate":
+		if !rw.isExplicit("block_ai_bots") {
+			rw.BlockAIBots = true
+		}
+		if !rw.isExplicit("ai_bot_profile") && rw.AIBotProfile == "" {
+			rw.AIBotProfile = "train_only"
+		}
+		if !rw.isExplicit("block_script_clients") {
+			rw.BlockScriptClients = true
+		}
+		if !rw.isExplicit("detect_browser_impersonation") {
+			rw.DetectBrowserImpersonation = true
+		}
+		if !rw.isExplicit("verify_search_engine_bots") {
+			rw.VerifySearchEngineBots = true
+		}
+	case "strict":
+		if !rw.isExplicit("block_ai_bots") {
+			rw.BlockAIBots = true
+		}
+		if !rw.isExplicit("ai_bot_profile") && rw.AIBotProfile == "" {
+			rw.AIBotProfile = "all"
+		}
+		if !rw.isExplicit("block_script_clients") {
+			rw.BlockScriptClients = true
+		}
+		if !rw.isExplicit("detect_browser_impersonation") {
+			rw.DetectBrowserImpersonation = true
+		}
+		if !rw.isExplicit("verify_search_engine_bots") {
+			rw.VerifySearchEngineBots = true
+		}
+	case "aggressive", "paranoia":
+		if !rw.isExplicit("block_ai_bots") {
+			rw.BlockAIBots = true
+		}
+		if !rw.isExplicit("ai_bot_profile") && rw.AIBotProfile == "" {
+			rw.AIBotProfile = "aggressive"
+		}
+		if !rw.isExplicit("block_script_clients") {
+			rw.BlockScriptClients = true
+		}
+		if !rw.isExplicit("detect_browser_impersonation") {
+			rw.DetectBrowserImpersonation = true
+		}
+		if !rw.isExplicit("verify_search_engine_bots") {
+			rw.VerifySearchEngineBots = true
+		}
+	}
 }

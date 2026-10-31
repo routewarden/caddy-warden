@@ -2723,4 +2723,143 @@ func TestRouteWarden_BrowserImpersonationAndScriptClients(t *testing.T) {
 	}
 }
 
+func TestRouteWarden_BotDefenseLevelPresets(t *testing.T) {
+	next := &testHandler{}
+
+	// 1. Level: standard -> blocks GPTBot, python-requests, and spoofed Chrome; allows search bot (PerplexityBot)
+	rwStandard := caddywarden.RouteWarden{
+		Enabled:         true,
+		BotDefenseLevel: "standard",
+	}
+	ctx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
+	defer cancel()
+	if err := rwStandard.Provision(ctx); err != nil {
+		t.Fatalf("Provision failed: %v", err)
+	}
+
+	// GPTBot blocked
+	reqGPT := httptest.NewRequest(http.MethodGet, "/index.html", nil)
+	reqGPT.Header.Set("User-Agent", "Mozilla/5.0 AppleWebKit/537.36 (compatible; GPTBot/1.2; +https://openai.com/gptbot)")
+	recGPT := httptest.NewRecorder()
+	next.handled = false
+	if err := rwStandard.ServeHTTP(recGPT, reqGPT, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recGPT.Code != http.StatusForbidden {
+		t.Errorf("expected GPTBot to be blocked under standard level, got %d", recGPT.Code)
+	}
+
+	// Python-requests blocked
+	reqPy := httptest.NewRequest(http.MethodGet, "/index.html", nil)
+	reqPy.Header.Set("User-Agent", "python-requests/2.31.0")
+	recPy := httptest.NewRecorder()
+	next.handled = false
+	if err := rwStandard.ServeHTTP(recPy, reqPy, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recPy.Code != http.StatusForbidden {
+		t.Errorf("expected python-requests to be blocked under standard level, got %d", recPy.Code)
+	}
+
+	// Spoofed Chrome (missing Accept-Language) blocked
+	chromeUA := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+	reqSpoofed := httptest.NewRequest(http.MethodGet, "/index.html", nil)
+	reqSpoofed.Header.Set("User-Agent", chromeUA)
+	recSpoofed := httptest.NewRecorder()
+	next.handled = false
+	if err := rwStandard.ServeHTTP(recSpoofed, reqSpoofed, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recSpoofed.Code != http.StatusForbidden {
+		t.Errorf("expected spoofed Chrome to be blocked under standard level, got %d", recSpoofed.Code)
+	}
+
+	// Search bot (PerplexityBot) allowed under standard (train_only default)
+	reqPerp := httptest.NewRequest(http.MethodGet, "/index.html", nil)
+	reqPerp.Header.Set("User-Agent", "Mozilla/5.0 (compatible; PerplexityBot/1.0; +https://perplexity.ai/perplexitybot)")
+	recPerp := httptest.NewRecorder()
+	next.handled = false
+	if err := rwStandard.ServeHTTP(recPerp, reqPerp, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !next.handled || recPerp.Code != http.StatusOK {
+		t.Errorf("expected PerplexityBot to pass under standard level, got %d handled %v", recPerp.Code, next.handled)
+	}
+
+	// 2. Level: strict -> blocks search bot (PerplexityBot)
+	rwStrict := caddywarden.RouteWarden{
+		Enabled:         true,
+		BotDefenseLevel: "strict",
+	}
+	if err := rwStrict.Provision(ctx); err != nil {
+		t.Fatalf("Provision failed: %v", err)
+	}
+	recPerpStrict := httptest.NewRecorder()
+	next.handled = false
+	if err := rwStrict.ServeHTTP(recPerpStrict, reqPerp, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recPerpStrict.Code != http.StatusForbidden {
+		t.Errorf("expected PerplexityBot to be blocked under strict level, got %d", recPerpStrict.Code)
+	}
+
+	// 3. Level: light -> allows spoofed Chrome (browser impersonation off), blocks python-requests
+	rwLight := caddywarden.RouteWarden{
+		Enabled:         true,
+		BotDefenseLevel: "light",
+	}
+	if err := rwLight.Provision(ctx); err != nil {
+		t.Fatalf("Provision failed: %v", err)
+	}
+	recSpoofedLight := httptest.NewRecorder()
+	next.handled = false
+	if err := rwLight.ServeHTTP(recSpoofedLight, reqSpoofed, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !next.handled || recSpoofedLight.Code != http.StatusOK {
+		t.Errorf("expected spoofed Chrome to pass under light level, got %d", recSpoofedLight.Code)
+	}
+
+	recPyLight := httptest.NewRecorder()
+	next.handled = false
+	if err := rwLight.ServeHTTP(recPyLight, reqPy, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recPyLight.Code != http.StatusForbidden {
+		t.Errorf("expected python-requests to be blocked under light level, got %d", recPyLight.Code)
+	}
+
+	// 4. Caddyfile parsing with bot_defense_level and explicit override
+	d := caddyfile.NewTestDispenser(`
+		routewarden {
+			bot_defense_level standard
+			detect_browser_impersonation false
+		}
+	`)
+	var parsedRW caddywarden.RouteWarden
+	if err := parsedRW.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile error: %v", err)
+	}
+	if err := parsedRW.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+	if parsedRW.DetectBrowserImpersonation {
+		t.Errorf("expected DetectBrowserImpersonation to remain false due to explicit override")
+	}
+	if !parsedRW.BlockAIBots {
+		t.Errorf("expected BlockAIBots to be true from standard level preset")
+	}
+
+	// Spoofed Chrome should pass because detect_browser_impersonation is false
+	recSpoofedOverride := httptest.NewRecorder()
+	next.handled = false
+	if err := parsedRW.ServeHTTP(recSpoofedOverride, reqSpoofed, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !next.handled || recSpoofedOverride.Code != http.StatusOK {
+		t.Errorf("expected spoofed Chrome to pass with explicit override, got %d", recSpoofedOverride.Code)
+	}
+}
+
+
 

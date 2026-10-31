@@ -125,6 +125,11 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				rw.ASNDB = args[0]
+			case "bot_defense_level", "botDefenseLevel":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				rw.BotDefenseLevel = d.Val()
 			case "block_ai_bots":
 				rw.BlockAIBots = parseBoolArg(d, true)
 			case "ai_bot_profile":
