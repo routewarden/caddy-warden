@@ -2859,6 +2859,57 @@ func TestRouteWarden_BotDefenseLevelPresets(t *testing.T) {
 	if !next.handled || recSpoofedOverride.Code != http.StatusOK {
 		t.Errorf("expected spoofed Chrome to pass with explicit override, got %d", recSpoofedOverride.Code)
 	}
+
+	// 5. Caddy native JSON unmarshaling with camelCase and explicit override
+	caddyJSON := `{
+		"enabled": true,
+		"botDefenseLevel": "standard",
+		"detectBrowserImpersonation": false
+	}`
+	var jsonRW caddywarden.RouteWarden
+	if err := json.Unmarshal([]byte(caddyJSON), &jsonRW); err != nil {
+		t.Fatalf("json.Unmarshal error: %v", err)
+	}
+	if err := jsonRW.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+	if jsonRW.DetectBrowserImpersonation {
+		t.Errorf("expected DetectBrowserImpersonation to remain false in Caddy JSON unmarshaling")
+	}
+	if !jsonRW.BlockAIBots {
+		t.Errorf("expected BlockAIBots to be true from standard level preset in Caddy JSON")
+	}
+	recSpoofedJSON := httptest.NewRecorder()
+	next.handled = false
+	if err := jsonRW.ServeHTTP(recSpoofedJSON, reqSpoofed, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !next.handled || recSpoofedJSON.Code != http.StatusOK {
+		t.Errorf("expected spoofed Chrome to pass in Caddy JSON override, got %d", recSpoofedJSON.Code)
+	}
+
+	// 6. Amazonbot and Anthropic/1.0 AI bot defense tests
+	reqAmazon := httptest.NewRequest("GET", "/index.html", nil)
+	reqAmazon.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Amazonbot/0.1; +https://developer.amazon.com/support/amazonbot)")
+	recAmazon := httptest.NewRecorder()
+	next.handled = false
+	if err := jsonRW.ServeHTTP(recAmazon, reqAmazon, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recAmazon.Code != http.StatusForbidden {
+		t.Errorf("expected Amazonbot to be blocked, got %d", recAmazon.Code)
+	}
+
+	reqAnthropic := httptest.NewRequest("GET", "/index.html", nil)
+	reqAnthropic.Header.Set("User-Agent", "Anthropic/1.0")
+	recAnthropic := httptest.NewRecorder()
+	next.handled = false
+	if err := jsonRW.ServeHTTP(recAnthropic, reqAnthropic, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recAnthropic.Code != http.StatusForbidden {
+		t.Errorf("expected Anthropic/1.0 to be blocked, got %d", recAnthropic.Code)
+	}
 }
 
 

@@ -115,11 +115,17 @@ func (rw *RouteWarden) markExplicit(field string) {
 	rw.ExplicitFields = append(rw.ExplicitFields, field)
 }
 
-func (rw *RouteWarden) isExplicit(field string) bool {
-	return slices.Contains(rw.ExplicitFields, field)
+func (rw *RouteWarden) isExplicit(fields ...string) bool {
+	for _, f := range fields {
+		if slices.Contains(rw.ExplicitFields, f) {
+			return true
+		}
+	}
+	return false
 }
 
-// UnmarshalJSON implements custom JSON unmarshaling to track explicitly provided fields.
+// UnmarshalJSON implements custom JSON unmarshaling to track explicitly provided fields,
+// and supports both snake_case and camelCase fields from Caddy JSON configurations.
 func (rw *RouteWarden) UnmarshalJSON(data []byte) error {
 	type alias RouteWarden
 	var a alias
@@ -132,6 +138,123 @@ func (rw *RouteWarden) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err == nil {
 		for k := range raw {
 			rw.markExplicit(k)
+		}
+	}
+
+	var camel struct {
+		ConfigFile                 *string  `json:"configFile"`
+		EnableDefaultPatterns      *bool    `json:"enableDefaultPatterns"`
+		EnableDefaultAllowPatterns *bool    `json:"enableDefaultAllowPatterns"`
+		BlockPatterns              []string `json:"blockPatterns"`
+		AllowPatterns              []string `json:"allowPatterns"`
+		AllowedASNs                []string `json:"allowedASNs"`
+		BlockedASNs                []string `json:"blockedASNs"`
+		ASNDB                      *string  `json:"asnDB"`
+		BotDefenseLevel            *string  `json:"botDefenseLevel"`
+		BlockAIBots                *bool    `json:"blockAIBots"`
+		AIBotProfile               *string  `json:"aiBotProfile"`
+		BlockUserAgents            []string `json:"blockUserAgents"`
+		AllowUserAgents            []string `json:"allowUserAgents"`
+		HoneypotTrapPaths          []string `json:"honeypotTrapPaths"`
+		TrapBanDuration            *string  `json:"trapBanDuration"`
+		VerifySearchEngineBots     *bool    `json:"verifySearchEngineBots"`
+		DetectBrowserImpersonation *bool    `json:"detectBrowserImpersonation"`
+		BlockScriptClients         *bool    `json:"blockScriptClients"`
+		AllowedIPs                 []string `json:"allowedIps"`
+		TrustedProxies             []string `json:"trustedProxies"`
+		CheckQuery                 *bool    `json:"checkQuery"`
+		CheckHeaders               []string `json:"checkHeaders"`
+		CheckBody                  *bool    `json:"checkBody"`
+		CheckBodyMaxBytes          *int64   `json:"checkBodyMaxBytes"`
+		CheckBodyPatterns          []string `json:"checkBodyPatterns"`
+		StatusCode                 *int     `json:"statusCode"`
+		CustomResponseText         *string  `json:"customResponseText"`
+		SecurityLog                *bool    `json:"securityLog"`
+	}
+	if err := json.Unmarshal(data, &camel); err == nil {
+		if camel.ConfigFile != nil {
+			rw.ConfigFile = *camel.ConfigFile
+		}
+		if camel.EnableDefaultPatterns != nil {
+			rw.EnableDefaultPatterns = *camel.EnableDefaultPatterns
+		}
+		if camel.EnableDefaultAllowPatterns != nil {
+			rw.EnableDefaultAllowPatterns = *camel.EnableDefaultAllowPatterns
+		}
+		if camel.BlockPatterns != nil {
+			rw.BlockPatterns = camel.BlockPatterns
+		}
+		if camel.AllowPatterns != nil {
+			rw.AllowPatterns = camel.AllowPatterns
+		}
+		if camel.AllowedASNs != nil {
+			rw.AllowedASNs = camel.AllowedASNs
+		}
+		if camel.BlockedASNs != nil {
+			rw.BlockedASNs = camel.BlockedASNs
+		}
+		if camel.ASNDB != nil {
+			rw.ASNDB = *camel.ASNDB
+		}
+		if camel.BotDefenseLevel != nil {
+			rw.BotDefenseLevel = *camel.BotDefenseLevel
+		}
+		if camel.BlockAIBots != nil {
+			rw.BlockAIBots = *camel.BlockAIBots
+		}
+		if camel.AIBotProfile != nil {
+			rw.AIBotProfile = *camel.AIBotProfile
+		}
+		if camel.BlockUserAgents != nil {
+			rw.BlockUserAgents = camel.BlockUserAgents
+		}
+		if camel.AllowUserAgents != nil {
+			rw.AllowUserAgents = camel.AllowUserAgents
+		}
+		if camel.HoneypotTrapPaths != nil {
+			rw.HoneypotTrapPaths = camel.HoneypotTrapPaths
+		}
+		if camel.TrapBanDuration != nil {
+			rw.TrapBanDuration = *camel.TrapBanDuration
+		}
+		if camel.VerifySearchEngineBots != nil {
+			rw.VerifySearchEngineBots = *camel.VerifySearchEngineBots
+		}
+		if camel.DetectBrowserImpersonation != nil {
+			rw.DetectBrowserImpersonation = *camel.DetectBrowserImpersonation
+		}
+		if camel.BlockScriptClients != nil {
+			rw.BlockScriptClients = *camel.BlockScriptClients
+		}
+		if camel.AllowedIPs != nil {
+			rw.AllowedIPs = camel.AllowedIPs
+		}
+		if camel.TrustedProxies != nil {
+			rw.TrustedProxies = camel.TrustedProxies
+		}
+		if camel.CheckQuery != nil {
+			rw.CheckQuery = *camel.CheckQuery
+		}
+		if camel.CheckHeaders != nil {
+			rw.CheckHeaders = camel.CheckHeaders
+		}
+		if camel.CheckBody != nil {
+			rw.CheckBody = *camel.CheckBody
+		}
+		if camel.CheckBodyMaxBytes != nil {
+			rw.CheckBodyMaxBytes = *camel.CheckBodyMaxBytes
+		}
+		if camel.CheckBodyPatterns != nil {
+			rw.CheckBodyPatterns = camel.CheckBodyPatterns
+		}
+		if camel.StatusCode != nil {
+			rw.StatusCode = *camel.StatusCode
+		}
+		if camel.CustomResponseText != nil {
+			rw.CustomResponseText = *camel.CustomResponseText
+		}
+		if camel.SecurityLog != nil {
+			rw.SecurityLog = *camel.SecurityLog
 		}
 	}
 	return nil
@@ -503,18 +626,18 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		if rw.ASNDB != "" {
 			fileCfg.ASNDB = rw.ASNDB
 		}
-		if rw.isExplicit("bot_defense_level") || rw.isExplicit("botDefenseLevel") || rw.BotDefenseLevel != "" || rw.BotDefenseLevelCamel != "" {
+		if rw.isExplicit("bot_defense_level", "botDefenseLevel") || rw.BotDefenseLevel != "" || rw.BotDefenseLevelCamel != "" {
 			lvl := rw.BotDefenseLevel
 			if lvl == "" {
 				lvl = rw.BotDefenseLevelCamel
 			}
 			fileCfg.BotDefenseLevel = lvl
-			applyBotDefenseLevel(lvl, &fileCfg.BlockAIBots, &fileCfg.AIBotProfile, &fileCfg.DetectBrowserImpersonation, &fileCfg.BlockScriptClients, &fileCfg.VerifySearchEngineBots)
+			fileCfg.applyBotDefense(lvl)
 		}
-		if rw.isExplicit("block_ai_bots") {
+		if rw.isExplicit("block_ai_bots", "blockAIBots") {
 			fileCfg.BlockAIBots = rw.BlockAIBots
 		}
-		if rw.AIBotProfile != "" {
+		if rw.isExplicit("ai_bot_profile", "aiBotProfile") || rw.AIBotProfile != "" {
 			fileCfg.AIBotProfile = rw.AIBotProfile
 		}
 		if len(rw.BlockUserAgents) > 0 {
@@ -529,13 +652,13 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		if rw.TrapBanDuration != "" {
 			fileCfg.TrapBanDuration = rw.TrapBanDuration
 		}
-		if rw.isExplicit("verify_search_engine_bots") || (!hasExplicit && rw.VerifySearchEngineBots) {
+		if rw.isExplicit("verify_search_engine_bots", "verifySearchEngineBots") || (!hasExplicit && rw.VerifySearchEngineBots) {
 			fileCfg.VerifySearchEngineBots = rw.VerifySearchEngineBots
 		}
-		if rw.isExplicit("detect_browser_impersonation") || (!hasExplicit && rw.DetectBrowserImpersonation) {
+		if rw.isExplicit("detect_browser_impersonation", "detectBrowserImpersonation") || (!hasExplicit && rw.DetectBrowserImpersonation) {
 			fileCfg.DetectBrowserImpersonation = rw.DetectBrowserImpersonation
 		}
-		if rw.isExplicit("block_script_clients") || (!hasExplicit && rw.BlockScriptClients) {
+		if rw.isExplicit("block_script_clients", "blockScriptClients") || (!hasExplicit && rw.BlockScriptClients) {
 			fileCfg.BlockScriptClients = rw.BlockScriptClients
 		}
 		if len(rw.AllowedIPs) > 0 {
@@ -1423,64 +1546,64 @@ func applyBotDefenseLevel(level string, blockAIBots *bool, aiBotProfile *string,
 func (rw *RouteWarden) applyBotDefense(level string) {
 	switch strings.ToLower(strings.TrimSpace(level)) {
 	case "light", "relaxed":
-		if !rw.isExplicit("block_ai_bots") {
+		if !rw.isExplicit("block_ai_bots", "blockAIBots") {
 			rw.BlockAIBots = true
 		}
-		if !rw.isExplicit("ai_bot_profile") && rw.AIBotProfile == "" {
+		if !rw.isExplicit("ai_bot_profile", "aiBotProfile") && rw.AIBotProfile == "" {
 			rw.AIBotProfile = "train_only"
 		}
-		if !rw.isExplicit("block_script_clients") {
+		if !rw.isExplicit("block_script_clients", "blockScriptClients") {
 			rw.BlockScriptClients = true
 		}
-		if !rw.isExplicit("verify_search_engine_bots") {
+		if !rw.isExplicit("verify_search_engine_bots", "verifySearchEngineBots") {
 			rw.VerifySearchEngineBots = true
 		}
 	case "standard", "moderate":
-		if !rw.isExplicit("block_ai_bots") {
+		if !rw.isExplicit("block_ai_bots", "blockAIBots") {
 			rw.BlockAIBots = true
 		}
-		if !rw.isExplicit("ai_bot_profile") && rw.AIBotProfile == "" {
+		if !rw.isExplicit("ai_bot_profile", "aiBotProfile") && rw.AIBotProfile == "" {
 			rw.AIBotProfile = "train_only"
 		}
-		if !rw.isExplicit("block_script_clients") {
+		if !rw.isExplicit("block_script_clients", "blockScriptClients") {
 			rw.BlockScriptClients = true
 		}
-		if !rw.isExplicit("detect_browser_impersonation") {
+		if !rw.isExplicit("detect_browser_impersonation", "detectBrowserImpersonation") {
 			rw.DetectBrowserImpersonation = true
 		}
-		if !rw.isExplicit("verify_search_engine_bots") {
+		if !rw.isExplicit("verify_search_engine_bots", "verifySearchEngineBots") {
 			rw.VerifySearchEngineBots = true
 		}
 	case "strict":
-		if !rw.isExplicit("block_ai_bots") {
+		if !rw.isExplicit("block_ai_bots", "blockAIBots") {
 			rw.BlockAIBots = true
 		}
-		if !rw.isExplicit("ai_bot_profile") && rw.AIBotProfile == "" {
+		if !rw.isExplicit("ai_bot_profile", "aiBotProfile") && rw.AIBotProfile == "" {
 			rw.AIBotProfile = "all"
 		}
-		if !rw.isExplicit("block_script_clients") {
+		if !rw.isExplicit("block_script_clients", "blockScriptClients") {
 			rw.BlockScriptClients = true
 		}
-		if !rw.isExplicit("detect_browser_impersonation") {
+		if !rw.isExplicit("detect_browser_impersonation", "detectBrowserImpersonation") {
 			rw.DetectBrowserImpersonation = true
 		}
-		if !rw.isExplicit("verify_search_engine_bots") {
+		if !rw.isExplicit("verify_search_engine_bots", "verifySearchEngineBots") {
 			rw.VerifySearchEngineBots = true
 		}
 	case "aggressive", "paranoia":
-		if !rw.isExplicit("block_ai_bots") {
+		if !rw.isExplicit("block_ai_bots", "blockAIBots") {
 			rw.BlockAIBots = true
 		}
-		if !rw.isExplicit("ai_bot_profile") && rw.AIBotProfile == "" {
+		if !rw.isExplicit("ai_bot_profile", "aiBotProfile") && rw.AIBotProfile == "" {
 			rw.AIBotProfile = "aggressive"
 		}
-		if !rw.isExplicit("block_script_clients") {
+		if !rw.isExplicit("block_script_clients", "blockScriptClients") {
 			rw.BlockScriptClients = true
 		}
-		if !rw.isExplicit("detect_browser_impersonation") {
+		if !rw.isExplicit("detect_browser_impersonation", "detectBrowserImpersonation") {
 			rw.DetectBrowserImpersonation = true
 		}
-		if !rw.isExplicit("verify_search_engine_bots") {
+		if !rw.isExplicit("verify_search_engine_bots", "verifySearchEngineBots") {
 			rw.VerifySearchEngineBots = true
 		}
 	}
