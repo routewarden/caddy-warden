@@ -1301,6 +1301,11 @@ func TestRouteWarden_LiveSamplesParitySuite(t *testing.T) {
 			"/docker-compose.yml",
 			"/.DS_Store",
 			"/wp-config.php",
+			"/wp-config.php::$DATA",
+			"/settings.py.",
+			"/server.key%20",
+			"/database.sqlite3::$data",
+			"/sub./.env",
 		}
 
 		for _, p := range paths {
@@ -1422,6 +1427,49 @@ func TestRouteWarden_LiveSamplesParitySuite(t *testing.T) {
 		_ = reqCloser.Body.Close()
 		if !closed {
 			t.Errorf("expected underlying request body closer to be called")
+		}
+
+		// 5. Form parameter extraction matching end-anchored pattern
+		rwForm := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: false,
+			Methods:               []string{"POST"},
+			CheckBody:             true,
+			BlockPatterns:         []string{`(?i)\.key$`},
+		}
+		if err := rwForm.Provision(ctx); err != nil {
+			t.Fatalf("unexpected provision error: %v", err)
+		}
+		reqForm := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader("other=1&cert=server.key&final=ok"))
+		recForm := httptest.NewRecorder()
+		nextForm := &testHandler{}
+		if err := rwForm.ServeHTTP(recForm, reqForm, nextForm); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nextForm.handled || recForm.Code != http.StatusForbidden {
+			t.Errorf("expected 403 for form param server.key, got %d", recForm.Code)
+		}
+
+		// 6. JSON payload extraction matching end-anchored pattern
+		reqJSON := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader(`{"config": {"private_key": "id_rsa.key"}, "status": "active"}`))
+		recJSON := httptest.NewRecorder()
+		nextJSON := &testHandler{}
+		if err := rwForm.ServeHTTP(recJSON, reqJSON, nextJSON); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nextJSON.handled || recJSON.Code != http.StatusForbidden {
+			t.Errorf("expected 403 for JSON nested string id_rsa.key, got %d", recJSON.Code)
+		}
+
+		// 7. JSON array extraction matching end-anchored pattern
+		reqJSONArr := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader(`{"files": ["readme.txt", "secret.key"]}`))
+		recJSONArr := httptest.NewRecorder()
+		nextJSONArr := &testHandler{}
+		if err := rwForm.ServeHTTP(recJSONArr, reqJSONArr, nextJSONArr); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nextJSONArr.handled || recJSONArr.Code != http.StatusForbidden {
+			t.Errorf("expected 403 for JSON array element secret.key, got %d", recJSONArr.Code)
 		}
 	})
 }
@@ -1960,6 +2008,64 @@ func TestRouteWarden_HttpNoBodyPreserved(t *testing.T) {
 	}
 }
 
+type errReaderWithData struct {
+	data   []byte
+	err    error
+	offset int
+}
+
+func (r *errReaderWithData) Read(p []byte) (n int, err error) {
+	if r.offset < len(r.data) {
+		n = copy(p, r.data[r.offset:])
+		r.offset += n
+		return n, r.err
+	}
+	return 0, r.err
+}
+
+func (r *errReaderWithData) Close() error {
+	return nil
+}
+
+func TestRouteWarden_CheckBody_BodyPreservedOnPartialReadError(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:           true,
+		Methods:           []string{"POST"},
+		CheckBody:         true,
+		CheckBodyPatterns: []string{`(?i)malware`},
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	payload := []byte("clean-partial-payload")
+	var receivedBody string
+	downstream := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		b, _ := io.ReadAll(r.Body)
+		receivedBody = string(b)
+		w.WriteHeader(http.StatusOK)
+		return nil
+	})
+
+	reader := &errReaderWithData{
+		data: payload,
+		err:  io.ErrUnexpectedEOF,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/upload", reader)
+	rec := httptest.NewRecorder()
+
+	if err := rw.ServeHTTP(rec, req, downstream); err != nil {
+		t.Fatalf("unexpected ServeHTTP error: %v", err)
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+	if receivedBody != string(payload) {
+		t.Errorf("expected downstream to receive %q, got %q", string(payload), receivedBody)
+	}
+}
+
 func TestRouteWarden_LogSecurityEvent_VerdictAndStatus(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -1971,8 +2077,10 @@ func TestRouteWarden_LogSecurityEvent_VerdictAndStatus(t *testing.T) {
 		{"json block", "json", 403, "BLOCK", 403},
 		{"fakesuccess", "fakesuccess", 403, "BLOCK", 200},
 		{"tarpit", "tarpit", 403, "TARPIT", 403},
+		{"markovtarpit", "markovtarpit", 200, "TARPIT", 200},
 		{"captcha challenge", "captcha", 403, "CHALLENGE", 403},
 		{"ratelimit", "ratelimit", 403, "BLOCK", 429},
+		{"rate_limit_challenge", "rate_limit_challenge", 429, "CHALLENGE", 429},
 		{"silentdrop", "silentdrop", 403, "BLOCK", 0},
 	}
 
@@ -1988,7 +2096,7 @@ func TestRouteWarden_LogSecurityEvent_VerdictAndStatus(t *testing.T) {
 					StatusCode: tc.statusCode,
 				},
 			}
-			if tc.mode == "tarpit" {
+			if tc.mode == "tarpit" || tc.mode == "markovtarpit" {
 				rw.Response.TarpitDelayMs = 1
 				rw.Response.TarpitMaxDurationSeconds = 1
 			}
@@ -2010,7 +2118,7 @@ func TestRouteWarden_LogSecurityEvent_VerdictAndStatus(t *testing.T) {
 			})
 
 			req := httptest.NewRequest(http.MethodGet, "/secret", nil)
-			if tc.mode == "tarpit" {
+			if tc.mode == "tarpit" || tc.mode == "markovtarpit" {
 				ctx, cancel := context.WithCancel(req.Context())
 				cancel()
 				req = req.WithContext(ctx)
@@ -2296,6 +2404,17 @@ func TestRouteWarden_CheckQuery_MalformedPercentEncoding(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("expected query with file=/.env&broken=%%zz to be blocked (403), got %d", rec.Code)
 	}
+
+	// Query contains multi-layer traversal combined with malformed percent encoding
+	reqMulti := httptest.NewRequest(http.MethodGet, "/search?file=/%252e%252e/.env%zz", nil)
+	recMulti := httptest.NewRecorder()
+	_ = rw.ServeHTTP(recMulti, reqMulti, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	}))
+	if recMulti.Code != http.StatusForbidden {
+		t.Errorf("expected query with file=/%%252e%%252e/.env%%zz to be blocked (403), got %d", recMulti.Code)
+	}
 }
 
 func TestRouteWarden_CheckBody_AutoExpandsDefaultMethods(t *testing.T) {
@@ -2340,6 +2459,44 @@ func TestRouteWarden_CheckQuery_KeysWithSensitiveNames(t *testing.T) {
 	}))
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("expected query key .env to be blocked (403), got %d", rec.Code)
+	}
+}
+
+func TestRouteWarden_CheckQuery_EncodedDelimitersAndSemicolon(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+		CheckQuery:            true,
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{"semicolon delimiter", "safe=1;file=.env"},
+		{"encoded ampersand delimiter", "safe=1%26file=.env"},
+		{"encoded semicolon delimiter", "safe=1%3bfile=.env"},
+		{"uppercase encoded semicolon", "safe=1%3Bfile=.env"},
+		{"query key without slash", ".env=1"},
+		{"multiple params sensitive extension", "file=backup.sql&page=1"},
+		{"sensitive extension following encoded ampersand", "safe=1%26doc=dump.sql"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/search?"+tt.query, nil)
+			rec := httptest.NewRecorder()
+			_ = rw.ServeHTTP(rec, req, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+				w.WriteHeader(http.StatusOK)
+				return nil
+			}))
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("expected query %q to be blocked (403), got %d", tt.query, rec.Code)
+			}
+		})
 	}
 }
 
@@ -2555,6 +2712,51 @@ func TestRouteWarden_HoneypotSpiderTrap(t *testing.T) {
 		t.Errorf("expected banned client to be blocked on safe page, got code %d handled %v", rec2.Code, next.handled)
 	}
 
+	// 4. Subpath of trap without trailing slash (/.rw-bot-trap/deep/link) triggers trap
+	client2 := "198.51.100.43"
+	next.handled = false
+	reqSubTrap := httptest.NewRequest(http.MethodGet, "/.rw-bot-trap/deep/link", nil)
+	reqSubTrap.RemoteAddr = client2 + ":12345"
+	recSubTrap := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recSubTrap, reqSubTrap, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recSubTrap.Code != http.StatusForbidden {
+		t.Errorf("expected subpath trap request to be blocked with 403, got %d", recSubTrap.Code)
+	}
+
+	// 5. Unrelated path sharing prefix (/.rw-bot-trapdoor) must NOT trigger trap
+	client3 := "198.51.100.44"
+	next.handled = false
+	reqPrefixSafe := httptest.NewRequest(http.MethodGet, "/.rw-bot-trapdoor", nil)
+	reqPrefixSafe.RemoteAddr = client3 + ":12345"
+	recPrefixSafe := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recPrefixSafe, reqPrefixSafe, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !next.handled {
+		t.Errorf("expected prefix-collision path /.rw-bot-trapdoor to pass, got handled=%v code=%d", next.handled, recPrefixSafe.Code)
+	}
+
+	// 5b. Honeypot trap configured WITHOUT leading slash (e.g. "no-slash-trap")
+	rwNoSlash := &caddywarden.RouteWarden{
+		Enabled:           true,
+		HoneypotTrapPaths: []string{"no-slash-trap"},
+		TrapBanDuration:   "1h",
+	}
+	if err := rwNoSlash.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+	next.handled = false
+	reqNoSlash := httptest.NewRequest(http.MethodGet, "/no-slash-trap", nil)
+	recNoSlash := httptest.NewRecorder()
+	if err := rwNoSlash.ServeHTTP(recNoSlash, reqNoSlash, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recNoSlash.Code != http.StatusForbidden {
+		t.Errorf("expected trap path without leading slash to trigger 403, got code %d handled %v", recNoSlash.Code, next.handled)
+	}
+
 	// 4. Test Caddyfile parsing
 	d := caddyfile.NewTestDispenser(`
 		routewarden {
@@ -2702,6 +2904,39 @@ func TestRouteWarden_BrowserImpersonationAndScriptClients(t *testing.T) {
 	}
 	if next.handled || recScript.Code != http.StatusForbidden {
 		t.Errorf("expected python-requests to be blocked with 403, got code %d handled %v", recScript.Code, next.handled)
+	}
+
+	// 3b. Script client with empty User-Agent and X-Playwright header -> 403
+	next.handled = false
+	reqEmptyPW := httptest.NewRequest(http.MethodGet, "/public/docs", nil)
+	reqEmptyPW.Header.Set("X-Playwright", "true")
+	recEmptyPW := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recEmptyPW, reqEmptyPW, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recEmptyPW.Code != http.StatusForbidden {
+		t.Errorf("expected empty UA with X-Playwright to be blocked with 403, got code %d handled %v", recEmptyPW.Code, next.handled)
+	}
+
+	// 3c. BlockUserAgents with ^$ matching empty User-Agent
+	rwEmptyUA := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: false,
+		BlockUserAgents:       []string{"^$"},
+		Methods:               []string{"GET"},
+		Response:              caddywarden.DefaultResponseConfig(),
+	}
+	if err := rwEmptyUA.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+	next.handled = false
+	reqNoUA := httptest.NewRequest(http.MethodGet, "/public/docs", nil)
+	recNoUA := httptest.NewRecorder()
+	if err := rwEmptyUA.ServeHTTP(recNoUA, reqNoUA, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recNoUA.Code != http.StatusForbidden {
+		t.Errorf("expected empty User-Agent to be blocked with ^$ pattern, got code %d handled %v", recNoUA.Code, next.handled)
 	}
 
 	// 4. Caddyfile parsing for new directives
@@ -2909,6 +3144,223 @@ func TestRouteWarden_BotDefenseLevelPresets(t *testing.T) {
 	}
 	if next.handled || recAnthropic.Code != http.StatusForbidden {
 		t.Errorf("expected Anthropic/1.0 to be blocked, got %d", recAnthropic.Code)
+	}
+}
+
+func TestRouteWarden_TrailingSlashMatching(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: false,
+		BlockPatterns:         []string{`(?i)^/admin/$`},
+		Mode:                  "json",
+	}
+	ctx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
+	defer cancel()
+
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	var handled bool
+	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		handled = true
+		w.WriteHeader(http.StatusOK)
+		return nil
+	})
+
+	// 1. Request with trailing slash
+	reqSlash := httptest.NewRequest("GET", "/admin/", nil)
+	recSlash := httptest.NewRecorder()
+	handled = false
+	if err := rw.ServeHTTP(recSlash, reqSlash, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if handled || recSlash.Code != http.StatusForbidden {
+		t.Errorf("expected /admin/ to be blocked with 403, got %d (handled=%v)", recSlash.Code, handled)
+	}
+
+	// 2. Request without trailing slash
+	reqNoSlash := httptest.NewRequest("GET", "/admin", nil)
+	recNoSlash := httptest.NewRecorder()
+	handled = false
+	if err := rw.ServeHTTP(recNoSlash, reqNoSlash, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if handled || recNoSlash.Code != http.StatusForbidden {
+		t.Errorf("expected /admin to be blocked with 403 (candidate trailing slash), got %d (handled=%v)", recNoSlash.Code, handled)
+	}
+
+	// 3. Subpath should not match exact ^/admin/$
+	reqSubpath := httptest.NewRequest("GET", "/admin/users", nil)
+	recSubpath := httptest.NewRecorder()
+	handled = false
+	if err := rw.ServeHTTP(recSubpath, reqSubpath, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !handled || recSubpath.Code != http.StatusOK {
+		t.Errorf("expected /admin/users to pass with 200, got %d (handled=%v)", recSubpath.Code, handled)
+	}
+}
+
+func TestRouteWarden_CheckHeaders_WhitespaceAndQuotes(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+		CheckHeaders:          []string{"X-Forwarded-Prefix", "X-Rewrite-URL"},
+		Mode:                  "json",
+	}
+	ctx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
+	defer cancel()
+
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	cases := []struct {
+		name        string
+		headerKey   string
+		headerVal   string
+		wantStatus  int
+		wantHandled bool
+	}{
+		{
+			name:        "Header with whitespace",
+			headerKey:   "X-Forwarded-Prefix",
+			headerVal:   "  /.env  ",
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Header wrapped in double quotes",
+			headerKey:   "X-Forwarded-Prefix",
+			headerVal:   `"/wp-config.php"`,
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Header wrapped in single quotes",
+			headerKey:   "X-Rewrite-URL",
+			headerVal:   `'/.env'`,
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Comma-separated header with quotes and spaces",
+			headerKey:   "X-Forwarded-Prefix",
+			headerVal:   `" /safe ", " /.env "`,
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Safe header",
+			headerKey:   "X-Forwarded-Prefix",
+			headerVal:   `"/dashboard"`,
+			wantStatus:  http.StatusOK,
+			wantHandled: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var handled bool
+			next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+				handled = true
+				w.WriteHeader(http.StatusOK)
+				return nil
+			})
+			req := httptest.NewRequest("GET", "/public", nil)
+			req.Header.Set(tc.headerKey, tc.headerVal)
+			rec := httptest.NewRecorder()
+			if err := rw.ServeHTTP(rec, req, next); err != nil {
+				t.Fatalf("ServeHTTP error: %v", err)
+			}
+			if rec.Code != tc.wantStatus || handled != tc.wantHandled {
+				t.Errorf("expected status=%d, handled=%v; got status=%d, handled=%v", tc.wantStatus, tc.wantHandled, rec.Code, handled)
+			}
+		})
+	}
+}
+
+func TestRouteWarden_EncodedDelimitersAndWhitespaceEvasion(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+		Mode:                  "json",
+	}
+	ctx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
+	defer cancel()
+
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	cases := []struct {
+		name        string
+		path        string
+		wantStatus  int
+		wantHandled bool
+	}{
+		{
+			name:        "Encoded question mark in sensitive extension (?param)",
+			path:        "/backup.sql%3fparam=value",
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Encoded fragment in sensitive file (#section)",
+			path:        "/database.sql%23section",
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Encoded query and fragment combined (%3f and %23)",
+			path:        "/server.key%3ffoo%23bar",
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Encoded carriage return (%0d)",
+			path:        "/.env%0d",
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Encoded newline (%0a)",
+			path:        "/.env%0a",
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Encoded horizontal tab (%09)",
+			path:        "/.env%09",
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Clean harmless request",
+			path:        "/index.html",
+			wantStatus:  http.StatusOK,
+			wantHandled: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var handled bool
+			next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+				handled = true
+				w.WriteHeader(http.StatusOK)
+				return nil
+			})
+			req := httptest.NewRequest("GET", tc.path, nil)
+			rec := httptest.NewRecorder()
+			if err := rw.ServeHTTP(rec, req, next); err != nil {
+				t.Fatalf("ServeHTTP error: %v", err)
+			}
+			if rec.Code != tc.wantStatus || handled != tc.wantHandled {
+				t.Errorf("expected status=%d, handled=%v; got status=%d, handled=%v", tc.wantStatus, tc.wantHandled, rec.Code, handled)
+			}
+		})
 	}
 }
 

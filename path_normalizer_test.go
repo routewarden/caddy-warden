@@ -68,7 +68,17 @@ func TestPathNormalizer_ExtractCandidatePaths(t *testing.T) {
 		{
 			name:             "Null byte in path",
 			path:             "/.env\x00.png",
-			expectedContains: []string{"/.env.png"},
+			expectedContains: []string{"/.env", "/.env.png"},
+		},
+		{
+			name:             "Null byte extension truncation",
+			path:             "/config.ini\x00.png",
+			expectedContains: []string{"/config.ini", "/config.ini.png"},
+		},
+		{
+			name:             "URL-encoded null byte truncation",
+			path:             "/database.backup.sql%00.jpg",
+			expectedContains: []string{"/database.backup.sql"},
 		},
 		{
 			name:             "RequestURI query string stripped for candidate path",
@@ -80,6 +90,55 @@ func TestPathNormalizer_ExtractCandidatePaths(t *testing.T) {
 			name:             "Dot slash canonical path (/./.env)",
 			path:             "/./.env",
 			expectedContains: []string{"/.env"},
+		},
+		{
+			name:             "NTFS Alternate Data Stream (::$DATA)",
+			path:             "/wp-config.php::$DATA",
+			expectedContains: []string{"/wp-config.php"},
+		},
+		{
+			name:             "NTFS Alternate Data Stream case-insensitive (::$data)",
+			path:             "/settings.py::$data",
+			expectedContains: []string{"/settings.py"},
+		},
+		{
+			name:             "Trailing dot on sensitive file extension",
+			path:             "/settings.py.",
+			expectedContains: []string{"/settings.py"},
+		},
+		{
+			name:             "Trailing spaces on sensitive file",
+			path:             "/server.key   ",
+			expectedContains: []string{"/server.key"},
+		},
+		{
+			name:             "Trailing dot on path segment",
+			path:             "/sub./.env",
+			expectedContains: []string{"/sub/.env"},
+		},
+		{
+			name:             "Absolute URI in requestURI",
+			path:             "/wp-config.php",
+			requestURI:       "http://example.com/wp-config.php",
+			expectedContains: []string{"/wp-config.php"},
+		},
+		{
+			name:             "Absolute URI with Windows backslash",
+			path:             `http://example.com\.env`,
+			requestURI:       `http://example.com\.env`,
+			expectedContains: []string{"/.env"},
+		},
+		{
+			name:             "Multi-layer encoded rawPath",
+			path:             "/public/test",
+			rawPath:          "/%252e%252e/.env",
+			requestURI:       "/public/test",
+			expectedContains: []string{"/.env"},
+		},
+		{
+			name:             "NTFS Alternate Data Stream combined with trailing dot",
+			path:             "/database.sqlite::$DATA.",
+			expectedContains: []string{"/database.sqlite"},
 		},
 	}
 
@@ -175,6 +234,36 @@ func TestPathNormalizer_EdgeCases(t *testing.T) {
 		}
 		if !foundBase {
 			t.Errorf("expected candidates to contain stripped base path '/api/v1', got %v", candidates)
+		}
+	})
+
+	// P-6: Malformed percent-encoding (%zz or trailing %) with multi-layer traversal
+	t.Run("P-6 lenient multi-layer percent decoding", func(t *testing.T) {
+		candidates := caddywarden.ExtractCandidatePaths("", "/%252e%252e/.env%zz", "/%252e%252e/.env%zz")
+		foundEnv := false
+		for _, c := range candidates {
+			if c == "/.env%zz" {
+				foundEnv = true
+				break
+			}
+		}
+		if !foundEnv {
+			t.Errorf("expected candidates to contain '/.env%%zz', got %v", candidates)
+		}
+	})
+
+	// P-7: Quadruple percent-encoded traversal (/%2525252e%2525252e/.env)
+	t.Run("P-7 quadruple percent-encoded traversal", func(t *testing.T) {
+		candidates := caddywarden.ExtractCandidatePaths("", "/%2525252e%2525252e/.env", "/%2525252e%2525252e/.env")
+		foundEnv := false
+		for _, c := range candidates {
+			if c == "/.env" {
+				foundEnv = true
+				break
+			}
+		}
+		if !foundEnv {
+			t.Errorf("expected candidates to contain '/.env' after 4 unescaping passes, got %v", candidates)
 		}
 	})
 }

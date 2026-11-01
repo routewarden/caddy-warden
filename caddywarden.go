@@ -1128,7 +1128,12 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 		for _, candPath := range candidatePaths {
 			for _, trapPath := range rw.HoneypotTrapPaths {
 				cleanTrap := strings.TrimSpace(trapPath)
-				if cleanTrap != "" && (candPath == cleanTrap || (strings.HasSuffix(cleanTrap, "/") && strings.HasPrefix(candPath, cleanTrap))) {
+				if cleanTrap != "" && !strings.HasPrefix(cleanTrap, "/") {
+					cleanTrap = "/" + cleanTrap
+				}
+				baseTrap := strings.TrimRight(cleanTrap, "/")
+				prefixTrap := baseTrap + "/"
+				if cleanTrap != "" && (candPath == baseTrap || candPath == cleanTrap || (baseTrap != "" && strings.HasPrefix(candPath, prefixTrap))) {
 					if rw.banTable != nil {
 						rw.banTable.Ban(clientIP, rw.parsedBanDuration)
 					}
@@ -1197,10 +1202,7 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 
 	// Optional Query String Inspection
 	if !isBlocked && rw.CheckQuery && req.URL.RawQuery != "" {
-		unescapedQuery, err := url.QueryUnescape(req.URL.RawQuery)
-		if err != nil {
-			unescapedQuery = req.URL.RawQuery
-		}
+		unescapedQuery := lenientQueryUnescape(req.URL.RawQuery)
 
 		queryCandidates := []string{req.URL.RawQuery, unescapedQuery}
 		parsedQuery, _ := url.ParseQuery(req.URL.RawQuery)
@@ -1212,15 +1214,22 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 				queryCandidates = append(queryCandidates, ExtractCandidatePaths(v, v, v)...)
 			}
 		}
-		// Also split raw query string on '&' and ';' to catch keys/values even when malformed encodings cause ParseQuery to error
-		for _, pair := range strings.FieldsFunc(req.URL.RawQuery, func(r rune) bool { return r == '&' || r == ';' }) {
-			if k, v, ok := strings.Cut(pair, "="); ok {
-				queryCandidates = append(queryCandidates, k, v)
-				queryCandidates = append(queryCandidates, ExtractCandidatePaths("", k, k)...)
-				queryCandidates = append(queryCandidates, ExtractCandidatePaths("", v, v)...)
-			} else if pair != "" {
-				queryCandidates = append(queryCandidates, pair)
-				queryCandidates = append(queryCandidates, ExtractCandidatePaths("", pair, pair)...)
+		// Also split raw and unescaped query strings on '&' and ';' to catch keys/values even when
+		// malformed encodings, semicolons, or encoded delimiters (%26, %3b) cause ParseQuery to error
+		queriesToParse := []string{req.URL.RawQuery}
+		if unescapedQuery != req.URL.RawQuery {
+			queriesToParse = append(queriesToParse, unescapedQuery)
+		}
+		for _, qStr := range queriesToParse {
+			for _, pair := range strings.FieldsFunc(qStr, func(r rune) bool { return r == '&' || r == ';' }) {
+				if k, v, ok := strings.Cut(pair, "="); ok {
+					queryCandidates = append(queryCandidates, k, v)
+					queryCandidates = append(queryCandidates, ExtractCandidatePaths("", k, k)...)
+					queryCandidates = append(queryCandidates, ExtractCandidatePaths("", v, v)...)
+				} else if pair != "" {
+					queryCandidates = append(queryCandidates, pair)
+					queryCandidates = append(queryCandidates, ExtractCandidatePaths("", pair, pair)...)
+				}
 			}
 		}
 		if rw.Debug && rw.logger != nil {
@@ -1259,10 +1268,26 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 					continue
 				}
 				headerVals := []string{rawHeaderVal}
+				if strings.HasPrefix(rawHeaderVal, "\"") && strings.HasSuffix(rawHeaderVal, "\"") && len(rawHeaderVal) >= 2 {
+					unquoted := strings.TrimSpace(rawHeaderVal[1 : len(rawHeaderVal)-1])
+					if unquoted != "" && unquoted != rawHeaderVal {
+						headerVals = append(headerVals, unquoted)
+					}
+				} else if strings.HasPrefix(rawHeaderVal, "'") && strings.HasSuffix(rawHeaderVal, "'") && len(rawHeaderVal) >= 2 {
+					unquoted := strings.TrimSpace(rawHeaderVal[1 : len(rawHeaderVal)-1])
+					if unquoted != "" && unquoted != rawHeaderVal {
+						headerVals = append(headerVals, unquoted)
+					}
+				}
 				if strings.Contains(rawHeaderVal, ",") {
 					for _, part := range strings.Split(rawHeaderVal, ",") {
 						part = strings.TrimSpace(part)
-						if part != "" && part != rawHeaderVal {
+						if strings.HasPrefix(part, "\"") && strings.HasSuffix(part, "\"") && len(part) >= 2 {
+							part = strings.TrimSpace(part[1 : len(part)-1])
+						} else if strings.HasPrefix(part, "'") && strings.HasSuffix(part, "'") && len(part) >= 2 {
+							part = strings.TrimSpace(part[1 : len(part)-1])
+						}
+						if part != "" {
 							headerVals = append(headerVals, part)
 						}
 					}
@@ -1322,12 +1347,62 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 			}
 
 			bodyStr := string(bodyBytes)
-			unescapedBody, unerr := url.QueryUnescape(bodyStr)
-			if unerr != nil {
-				unescapedBody = bodyStr
-			}
+			unescapedBody := lenientQueryUnescape(bodyStr)
 
 			bodyCandidates := []string{bodyStr, unescapedBody}
+
+			// Form urlencoded parameters extraction (&, ;)
+			if parsedValues, err := url.ParseQuery(bodyStr); err == nil && len(parsedValues) > 0 {
+				for k, vs := range parsedValues {
+					bodyCandidates = append(bodyCandidates, k)
+					bodyCandidates = append(bodyCandidates, ExtractCandidatePaths("", k, k)...)
+					for _, v := range vs {
+						bodyCandidates = append(bodyCandidates, v)
+						bodyCandidates = append(bodyCandidates, ExtractCandidatePaths(v, v, v)...)
+					}
+				}
+			}
+			bodiesToParse := []string{bodyStr}
+			if unescapedBody != bodyStr {
+				bodiesToParse = append(bodiesToParse, unescapedBody)
+			}
+			for _, bStr := range bodiesToParse {
+				for _, pair := range strings.FieldsFunc(bStr, func(r rune) bool { return r == '&' || r == ';' }) {
+					if k, v, ok := strings.Cut(pair, "="); ok {
+						bodyCandidates = append(bodyCandidates, k, v)
+						bodyCandidates = append(bodyCandidates, ExtractCandidatePaths("", k, k)...)
+						bodyCandidates = append(bodyCandidates, ExtractCandidatePaths("", v, v)...)
+					}
+				}
+			}
+
+			// JSON payload string values extraction
+			trimmedBody := strings.TrimSpace(bodyStr)
+			if (strings.HasPrefix(trimmedBody, "{") && strings.HasSuffix(trimmedBody, "}")) ||
+				(strings.HasPrefix(trimmedBody, "[") && strings.HasSuffix(trimmedBody, "]")) {
+				var jsonVal any
+				if err := json.Unmarshal([]byte(trimmedBody), &jsonVal); err == nil {
+					var extractJSON func(v any)
+					extractJSON = func(v any) {
+						switch val := v.(type) {
+						case string:
+							bodyCandidates = append(bodyCandidates, val)
+							bodyCandidates = append(bodyCandidates, ExtractCandidatePaths("", val, val)...)
+						case []any:
+							for _, item := range val {
+								extractJSON(item)
+							}
+						case map[string]any:
+							for k, item := range val {
+								bodyCandidates = append(bodyCandidates, k)
+								bodyCandidates = append(bodyCandidates, ExtractCandidatePaths("", k, k)...)
+								extractJSON(item)
+							}
+						}
+					}
+					extractJSON(jsonVal)
+				}
+			}
 
 			// If specific CheckBodyPatterns were defined, check against them:
 			patternsToCheck := rw.compiledBody
@@ -1435,9 +1510,9 @@ func (rw *RouteWarden) logSecurityEvent(r *http.Request, matchedTarget string, p
 	verdict := "BLOCK"
 	cleanMode := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(mode), "_", ""))
 	switch cleanMode {
-	case "tarpit":
+	case "tarpit", "markovtarpit":
 		verdict = "TARPIT"
-	case "captcha", "ratelimitchallenge":
+	case "captcha", "ratelimitchallenge", "challenge":
 		verdict = "CHALLENGE"
 	}
 
