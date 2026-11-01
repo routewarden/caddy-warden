@@ -1132,9 +1132,15 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 					cleanTrap = "/" + cleanTrap
 				}
 				baseTrap := strings.TrimRight(cleanTrap, "/")
+				if baseTrap == "" {
+					continue
+				}
 				prefixTrap := baseTrap + "/"
-				if cleanTrap != "" && (candPath == baseTrap || candPath == cleanTrap || (baseTrap != "" && strings.HasPrefix(candPath, prefixTrap))) {
-					if rw.banTable != nil {
+				lowerCand := strings.ToLower(candPath)
+				lowerBase := strings.ToLower(baseTrap)
+				lowerPrefix := strings.ToLower(prefixTrap)
+				if lowerCand == lowerBase || strings.HasPrefix(lowerCand, lowerPrefix) {
+					if rw.banTable != nil && clientIP != "" {
 						rw.banTable.Ban(clientIP, rw.parsedBanDuration)
 					}
 					rw.logSecurityEvent(req, candPath, cleanTrap, "honeypot_trap_triggered")

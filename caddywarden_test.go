@@ -2757,6 +2757,50 @@ func TestRouteWarden_HoneypotSpiderTrap(t *testing.T) {
 		t.Errorf("expected trap path without leading slash to trigger 403, got code %d handled %v", recNoSlash.Code, next.handled)
 	}
 
+	// 5c. Case-insensitive matching: uppercase/mixed-case requests must trigger trap
+	clientCase1 := "198.51.100.95"
+	next.handled = false
+	reqCase1 := httptest.NewRequest(http.MethodGet, "/.RW-BOT-TRAP", nil)
+	reqCase1.RemoteAddr = clientCase1 + ":12345"
+	recCase1 := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recCase1, reqCase1, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recCase1.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for /.RW-BOT-TRAP case-insensitive trap hit, got handled=%v code=%d", next.handled, recCase1.Code)
+	}
+
+	clientCase2 := "198.51.100.96"
+	next.handled = false
+	reqCase2 := httptest.NewRequest(http.MethodGet, "/Hidden-Spider-Trap/Deep/Link", nil)
+	reqCase2.RemoteAddr = clientCase2 + ":12345"
+	recCase2 := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recCase2, reqCase2, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recCase2.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for /Hidden-Spider-Trap/Deep/Link case-insensitive trap hit, got handled=%v code=%d", next.handled, recCase2.Code)
+	}
+
+	// 5d. Root honeypot trap safeguard: "/" must be ignored and not block root
+	rwRoot := &caddywarden.RouteWarden{
+		Enabled:           true,
+		HoneypotTrapPaths: []string{"/", "   "},
+		TrapBanDuration:   "1h",
+	}
+	if err := rwRoot.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+	next.handled = false
+	reqRoot := httptest.NewRequest(http.MethodGet, "/", nil)
+	recRoot := httptest.NewRecorder()
+	if err := rwRoot.ServeHTTP(recRoot, reqRoot, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !next.handled || recRoot.Code == http.StatusForbidden {
+		t.Errorf("expected root request to pass through when honeypotTrapPaths contains '/', got handled=%v code=%d", next.handled, recRoot.Code)
+	}
+
 	// 4. Test Caddyfile parsing
 	d := caddyfile.NewTestDispenser(`
 		routewarden {
