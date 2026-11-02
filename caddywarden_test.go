@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	caddywarden "github.com/routewarden/caddy-warden"
 )
@@ -1299,6 +1301,11 @@ func TestRouteWarden_LiveSamplesParitySuite(t *testing.T) {
 			"/docker-compose.yml",
 			"/.DS_Store",
 			"/wp-config.php",
+			"/wp-config.php::$DATA",
+			"/settings.py.",
+			"/server.key%20",
+			"/database.sqlite3::$data",
+			"/sub./.env",
 		}
 
 		for _, p := range paths {
@@ -1420,6 +1427,49 @@ func TestRouteWarden_LiveSamplesParitySuite(t *testing.T) {
 		_ = reqCloser.Body.Close()
 		if !closed {
 			t.Errorf("expected underlying request body closer to be called")
+		}
+
+		// 5. Form parameter extraction matching end-anchored pattern
+		rwForm := &caddywarden.RouteWarden{
+			Enabled:               true,
+			EnableDefaultPatterns: false,
+			Methods:               []string{"POST"},
+			CheckBody:             true,
+			BlockPatterns:         []string{`(?i)\.key$`},
+		}
+		if err := rwForm.Provision(ctx); err != nil {
+			t.Fatalf("unexpected provision error: %v", err)
+		}
+		reqForm := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader("other=1&cert=server.key&final=ok"))
+		recForm := httptest.NewRecorder()
+		nextForm := &testHandler{}
+		if err := rwForm.ServeHTTP(recForm, reqForm, nextForm); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nextForm.handled || recForm.Code != http.StatusForbidden {
+			t.Errorf("expected 403 for form param server.key, got %d", recForm.Code)
+		}
+
+		// 6. JSON payload extraction matching end-anchored pattern
+		reqJSON := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader(`{"config": {"private_key": "id_rsa.key"}, "status": "active"}`))
+		recJSON := httptest.NewRecorder()
+		nextJSON := &testHandler{}
+		if err := rwForm.ServeHTTP(recJSON, reqJSON, nextJSON); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nextJSON.handled || recJSON.Code != http.StatusForbidden {
+			t.Errorf("expected 403 for JSON nested string id_rsa.key, got %d", recJSON.Code)
+		}
+
+		// 7. JSON array extraction matching end-anchored pattern
+		reqJSONArr := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader(`{"files": ["readme.txt", "secret.key"]}`))
+		recJSONArr := httptest.NewRecorder()
+		nextJSONArr := &testHandler{}
+		if err := rwForm.ServeHTTP(recJSONArr, reqJSONArr, nextJSONArr); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if nextJSONArr.handled || recJSONArr.Code != http.StatusForbidden {
+			t.Errorf("expected 403 for JSON array element secret.key, got %d", recJSONArr.Code)
 		}
 	})
 }
@@ -1958,6 +2008,64 @@ func TestRouteWarden_HttpNoBodyPreserved(t *testing.T) {
 	}
 }
 
+type errReaderWithData struct {
+	data   []byte
+	err    error
+	offset int
+}
+
+func (r *errReaderWithData) Read(p []byte) (n int, err error) {
+	if r.offset < len(r.data) {
+		n = copy(p, r.data[r.offset:])
+		r.offset += n
+		return n, r.err
+	}
+	return 0, r.err
+}
+
+func (r *errReaderWithData) Close() error {
+	return nil
+}
+
+func TestRouteWarden_CheckBody_BodyPreservedOnPartialReadError(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:           true,
+		Methods:           []string{"POST"},
+		CheckBody:         true,
+		CheckBodyPatterns: []string{`(?i)malware`},
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	payload := []byte("clean-partial-payload")
+	var receivedBody string
+	downstream := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		b, _ := io.ReadAll(r.Body)
+		receivedBody = string(b)
+		w.WriteHeader(http.StatusOK)
+		return nil
+	})
+
+	reader := &errReaderWithData{
+		data: payload,
+		err:  io.ErrUnexpectedEOF,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/upload", reader)
+	rec := httptest.NewRecorder()
+
+	if err := rw.ServeHTTP(rec, req, downstream); err != nil {
+		t.Fatalf("unexpected ServeHTTP error: %v", err)
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+	if receivedBody != string(payload) {
+		t.Errorf("expected downstream to receive %q, got %q", string(payload), receivedBody)
+	}
+}
+
 func TestRouteWarden_LogSecurityEvent_VerdictAndStatus(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -1969,8 +2077,10 @@ func TestRouteWarden_LogSecurityEvent_VerdictAndStatus(t *testing.T) {
 		{"json block", "json", 403, "BLOCK", 403},
 		{"fakesuccess", "fakesuccess", 403, "BLOCK", 200},
 		{"tarpit", "tarpit", 403, "TARPIT", 403},
+		{"markovtarpit", "markovtarpit", 200, "TARPIT", 200},
 		{"captcha challenge", "captcha", 403, "CHALLENGE", 403},
 		{"ratelimit", "ratelimit", 403, "BLOCK", 429},
+		{"rate_limit_challenge", "rate_limit_challenge", 429, "CHALLENGE", 429},
 		{"silentdrop", "silentdrop", 403, "BLOCK", 0},
 	}
 
@@ -1986,7 +2096,7 @@ func TestRouteWarden_LogSecurityEvent_VerdictAndStatus(t *testing.T) {
 					StatusCode: tc.statusCode,
 				},
 			}
-			if tc.mode == "tarpit" {
+			if tc.mode == "tarpit" || tc.mode == "markovtarpit" {
 				rw.Response.TarpitDelayMs = 1
 				rw.Response.TarpitMaxDurationSeconds = 1
 			}
@@ -2008,7 +2118,7 @@ func TestRouteWarden_LogSecurityEvent_VerdictAndStatus(t *testing.T) {
 			})
 
 			req := httptest.NewRequest(http.MethodGet, "/secret", nil)
-			if tc.mode == "tarpit" {
+			if tc.mode == "tarpit" || tc.mode == "markovtarpit" {
 				ctx, cancel := context.WithCancel(req.Context())
 				cancel()
 				req = req.WithContext(ctx)
@@ -2294,6 +2404,17 @@ func TestRouteWarden_CheckQuery_MalformedPercentEncoding(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("expected query with file=/.env&broken=%%zz to be blocked (403), got %d", rec.Code)
 	}
+
+	// Query contains multi-layer traversal combined with malformed percent encoding
+	reqMulti := httptest.NewRequest(http.MethodGet, "/search?file=/%252e%252e/.env%zz", nil)
+	recMulti := httptest.NewRecorder()
+	_ = rw.ServeHTTP(recMulti, reqMulti, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	}))
+	if recMulti.Code != http.StatusForbidden {
+		t.Errorf("expected query with file=/%%252e%%252e/.env%%zz to be blocked (403), got %d", recMulti.Code)
+	}
 }
 
 func TestRouteWarden_CheckBody_AutoExpandsDefaultMethods(t *testing.T) {
@@ -2341,6 +2462,44 @@ func TestRouteWarden_CheckQuery_KeysWithSensitiveNames(t *testing.T) {
 	}
 }
 
+func TestRouteWarden_CheckQuery_EncodedDelimitersAndSemicolon(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+		CheckQuery:            true,
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{"semicolon delimiter", "safe=1;file=.env"},
+		{"encoded ampersand delimiter", "safe=1%26file=.env"},
+		{"encoded semicolon delimiter", "safe=1%3bfile=.env"},
+		{"uppercase encoded semicolon", "safe=1%3Bfile=.env"},
+		{"query key without slash", ".env=1"},
+		{"multiple params sensitive extension", "file=backup.sql&page=1"},
+		{"sensitive extension following encoded ampersand", "safe=1%26doc=dump.sql"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/search?"+tt.query, nil)
+			rec := httptest.NewRecorder()
+			_ = rw.ServeHTTP(rec, req, caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+				w.WriteHeader(http.StatusOK)
+				return nil
+			}))
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("expected query %q to be blocked (403), got %d", tt.query, rec.Code)
+			}
+		})
+	}
+}
+
 func TestRouteWarden_BracketedIPv6AllowedIPs(t *testing.T) {
 	rw := &caddywarden.RouteWarden{
 		Enabled:               true,
@@ -2375,3 +2534,879 @@ func TestRouteWarden_BracketedIPv6AllowedIPs(t *testing.T) {
 		t.Errorf("expected unallowed IPv6 accessing /.env to be blocked (403), got %d", recDenied.Code)
 	}
 }
+
+func TestRouteWarden_BlockAIBots(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+		BlockAIBots:           true,
+		AIBotProfile:          "train_only",
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	})
+
+	// 1. Normal Chrome Browser accessing benign path -> allowed (200)
+	reqBrowser := httptest.NewRequest(http.MethodGet, "/articles/post-1", nil)
+	reqBrowser.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+	recBrowser := httptest.NewRecorder()
+	_ = rw.ServeHTTP(recBrowser, reqBrowser, next)
+	if recBrowser.Code != http.StatusOK {
+		t.Errorf("expected normal browser to pass through (200), got %d", recBrowser.Code)
+	}
+
+	// 2. GPTBot on benign path -> blocked (403)
+	reqGPT := httptest.NewRequest(http.MethodGet, "/articles/post-1", nil)
+	reqGPT.Header.Set("User-Agent", "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.2; +https://openai.com/gptbot)")
+	recGPT := httptest.NewRecorder()
+	_ = rw.ServeHTTP(recGPT, reqGPT, next)
+	if recGPT.Code != http.StatusForbidden {
+		t.Errorf("expected GPTBot to be blocked (403), got %d", recGPT.Code)
+	}
+
+	// 3. Bytespider on benign path -> blocked (403)
+	reqByte := httptest.NewRequest(http.MethodGet, "/products/item-123", nil)
+	reqByte.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Bytespider; spider-feedback@bytedance.com)")
+	recByte := httptest.NewRecorder()
+	_ = rw.ServeHTTP(recByte, reqByte, next)
+	if recByte.Code != http.StatusForbidden {
+		t.Errorf("expected Bytespider to be blocked (403), got %d", recByte.Code)
+	}
+
+	// 4. PerplexityBot on train_only -> allowed (200)
+	reqPerp := httptest.NewRequest(http.MethodGet, "/articles/post-1", nil)
+	reqPerp.Header.Set("User-Agent", "Mozilla/5.0 (compatible; PerplexityBot/1.0; +https://perplexity.ai/perplexitybot)")
+	recPerp := httptest.NewRecorder()
+	_ = rw.ServeHTTP(recPerp, reqPerp, next)
+	if recPerp.Code != http.StatusOK {
+		t.Errorf("expected PerplexityBot to be allowed under train_only (200), got %d", recPerp.Code)
+	}
+
+	// 5. PerplexityBot on all profile -> blocked (403)
+	rwAll := &caddywarden.RouteWarden{
+		Enabled:      true,
+		BlockAIBots:  true,
+		AIBotProfile: "all",
+	}
+	_ = rwAll.Provision(caddy.Context{})
+	recPerpAll := httptest.NewRecorder()
+	_ = rwAll.ServeHTTP(recPerpAll, reqPerp, next)
+	if recPerpAll.Code != http.StatusForbidden {
+		t.Errorf("expected PerplexityBot to be blocked under 'all' profile (403), got %d", recPerpAll.Code)
+	}
+}
+
+func TestRouteWarden_CustomUserAgents(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:         true,
+		BlockUserAgents: []string{`(?i)ScraperBot`, `(?i)SpecialCrawler`},
+		AllowUserAgents: []string{`(?i)AllowedPartnerBot`},
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	})
+
+	// Blocked custom agent
+	reqBlocked := httptest.NewRequest(http.MethodGet, "/public/docs", nil)
+	reqBlocked.Header.Set("User-Agent", "MyCustomScraperBot/1.0")
+	recBlocked := httptest.NewRecorder()
+	_ = rw.ServeHTTP(recBlocked, reqBlocked, next)
+	if recBlocked.Code != http.StatusForbidden {
+		t.Errorf("expected custom scraper to be blocked (403), got %d", recBlocked.Code)
+	}
+
+	// Allowed custom agent
+	reqAllowed := httptest.NewRequest(http.MethodGet, "/public/docs", nil)
+	reqAllowed.Header.Set("User-Agent", "AllowedPartnerBot/2.0")
+	recAllowed := httptest.NewRecorder()
+	_ = rw.ServeHTTP(recAllowed, reqAllowed, next)
+	if recAllowed.Code != http.StatusOK {
+		t.Errorf("expected allowed agent to pass through (200), got %d", recAllowed.Code)
+	}
+}
+
+func TestRouteWarden_AIBot_CaddyfileParsing(t *testing.T) {
+	d := caddyfile.NewTestDispenser(`
+		routewarden {
+			block_ai_bots true
+			ai_bot_profile all
+			block_user_agents "(?i)CustomBadBot" "(?i)EvilCrawler"
+			allow_user_agents "(?i)TrustedBot"
+		}
+	`)
+	var rw caddywarden.RouteWarden
+	if err := rw.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile error: %v", err)
+	}
+
+	if !rw.BlockAIBots {
+		t.Error("expected BlockAIBots to be true")
+	}
+	if rw.AIBotProfile != "all" {
+		t.Errorf("expected AIBotProfile to be 'all', got %q", rw.AIBotProfile)
+	}
+	if len(rw.BlockUserAgents) != 2 || rw.BlockUserAgents[0] != "(?i)CustomBadBot" {
+		t.Errorf("unexpected BlockUserAgents: %v", rw.BlockUserAgents)
+	}
+	if len(rw.AllowUserAgents) != 1 || rw.AllowUserAgents[0] != "(?i)TrustedBot" {
+		t.Errorf("unexpected AllowUserAgents: %v", rw.AllowUserAgents)
+	}
+}
+
+func TestRouteWarden_HoneypotSpiderTrap(t *testing.T) {
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	rw := &caddywarden.RouteWarden{
+		Enabled:           true,
+		HoneypotTrapPaths: []string{"/.rw-bot-trap", "/hidden-spider-trap/"},
+		TrapBanDuration:   "1h",
+	}
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	next := &testHandler{}
+	clientIP := "198.51.100.42"
+
+	// 1. Initial request to safe page passes
+	req1 := httptest.NewRequest(http.MethodGet, "/public/about", nil)
+	req1.RemoteAddr = clientIP + ":12345"
+	rec1 := httptest.NewRecorder()
+	if err := rw.ServeHTTP(rec1, req1, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !next.handled {
+		t.Error("expected first safe request to pass")
+	}
+
+	// 2. Crawler requests hidden spider trap
+	next.handled = false
+	reqTrap := httptest.NewRequest(http.MethodGet, "/.rw-bot-trap", nil)
+	reqTrap.RemoteAddr = clientIP + ":12345"
+	recTrap := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recTrap, reqTrap, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recTrap.Code != http.StatusForbidden {
+		t.Errorf("expected trap request to be blocked with 403, got code %d handled %v", recTrap.Code, next.handled)
+	}
+
+	// 3. Subsequent request to safe page must now be blocked due to active ban!
+	next.handled = false
+	req2 := httptest.NewRequest(http.MethodGet, "/public/about", nil)
+	req2.RemoteAddr = clientIP + ":54321" // different ephemeral port, same IP
+	rec2 := httptest.NewRecorder()
+	if err := rw.ServeHTTP(rec2, req2, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || rec2.Code != http.StatusForbidden {
+		t.Errorf("expected banned client to be blocked on safe page, got code %d handled %v", rec2.Code, next.handled)
+	}
+
+	// 4. Subpath of trap without trailing slash (/.rw-bot-trap/deep/link) triggers trap
+	client2 := "198.51.100.43"
+	next.handled = false
+	reqSubTrap := httptest.NewRequest(http.MethodGet, "/.rw-bot-trap/deep/link", nil)
+	reqSubTrap.RemoteAddr = client2 + ":12345"
+	recSubTrap := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recSubTrap, reqSubTrap, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recSubTrap.Code != http.StatusForbidden {
+		t.Errorf("expected subpath trap request to be blocked with 403, got %d", recSubTrap.Code)
+	}
+
+	// 5. Unrelated path sharing prefix (/.rw-bot-trapdoor) must NOT trigger trap
+	client3 := "198.51.100.44"
+	next.handled = false
+	reqPrefixSafe := httptest.NewRequest(http.MethodGet, "/.rw-bot-trapdoor", nil)
+	reqPrefixSafe.RemoteAddr = client3 + ":12345"
+	recPrefixSafe := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recPrefixSafe, reqPrefixSafe, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !next.handled {
+		t.Errorf("expected prefix-collision path /.rw-bot-trapdoor to pass, got handled=%v code=%d", next.handled, recPrefixSafe.Code)
+	}
+
+	// 5b. Honeypot trap configured WITHOUT leading slash (e.g. "no-slash-trap")
+	rwNoSlash := &caddywarden.RouteWarden{
+		Enabled:           true,
+		HoneypotTrapPaths: []string{"no-slash-trap"},
+		TrapBanDuration:   "1h",
+	}
+	if err := rwNoSlash.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+	next.handled = false
+	reqNoSlash := httptest.NewRequest(http.MethodGet, "/no-slash-trap", nil)
+	recNoSlash := httptest.NewRecorder()
+	if err := rwNoSlash.ServeHTTP(recNoSlash, reqNoSlash, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recNoSlash.Code != http.StatusForbidden {
+		t.Errorf("expected trap path without leading slash to trigger 403, got code %d handled %v", recNoSlash.Code, next.handled)
+	}
+
+	// 5c. Case-insensitive matching: uppercase/mixed-case requests must trigger trap
+	clientCase1 := "198.51.100.95"
+	next.handled = false
+	reqCase1 := httptest.NewRequest(http.MethodGet, "/.RW-BOT-TRAP", nil)
+	reqCase1.RemoteAddr = clientCase1 + ":12345"
+	recCase1 := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recCase1, reqCase1, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recCase1.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for /.RW-BOT-TRAP case-insensitive trap hit, got handled=%v code=%d", next.handled, recCase1.Code)
+	}
+
+	clientCase2 := "198.51.100.96"
+	next.handled = false
+	reqCase2 := httptest.NewRequest(http.MethodGet, "/Hidden-Spider-Trap/Deep/Link", nil)
+	reqCase2.RemoteAddr = clientCase2 + ":12345"
+	recCase2 := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recCase2, reqCase2, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recCase2.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for /Hidden-Spider-Trap/Deep/Link case-insensitive trap hit, got handled=%v code=%d", next.handled, recCase2.Code)
+	}
+
+	// 5d. Root honeypot trap safeguard: "/" must be ignored and not block root
+	rwRoot := &caddywarden.RouteWarden{
+		Enabled:           true,
+		HoneypotTrapPaths: []string{"/", "   "},
+		TrapBanDuration:   "1h",
+	}
+	if err := rwRoot.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+	next.handled = false
+	reqRoot := httptest.NewRequest(http.MethodGet, "/", nil)
+	recRoot := httptest.NewRecorder()
+	if err := rwRoot.ServeHTTP(recRoot, reqRoot, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !next.handled || recRoot.Code == http.StatusForbidden {
+		t.Errorf("expected root request to pass through when honeypotTrapPaths contains '/', got handled=%v code=%d", next.handled, recRoot.Code)
+	}
+
+	// 4. Test Caddyfile parsing
+	d := caddyfile.NewTestDispenser(`
+		routewarden {
+			honeypot_trap_paths "/.bait-trap" "/hidden/"
+			trap_ban_duration 2h
+		}
+	`)
+	var parsedRW caddywarden.RouteWarden
+	if err := parsedRW.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile error: %v", err)
+	}
+	if len(parsedRW.HoneypotTrapPaths) != 2 || parsedRW.HoneypotTrapPaths[0] != "/.bait-trap" {
+		t.Errorf("unexpected HoneypotTrapPaths: %v", parsedRW.HoneypotTrapPaths)
+	}
+	if parsedRW.TrapBanDuration != "2h" {
+		t.Errorf("expected TrapBanDuration '2h', got %q", parsedRW.TrapBanDuration)
+	}
+}
+
+func TestRouteWarden_SearchEngineImpersonation(t *testing.T) {
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	rw := &caddywarden.RouteWarden{
+		Enabled:                true,
+		EnableDefaultPatterns:  false,
+		VerifySearchEngineBots: true,
+		BlockAIBots:            true,
+	}
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	rw.SetFCrDNSLookupFuncs(
+		func(ctx context.Context, addr string) ([]string, error) {
+			if addr == "66.249.66.1" {
+				return []string{"crawl-66-249-66-1.googlebot.com."}, nil
+			}
+			return []string{"attacker.vps.com."}, nil
+		},
+		func(ctx context.Context, host string) ([]net.IP, error) {
+			if host == "crawl-66-249-66-1.googlebot.com" {
+				return []net.IP{net.ParseIP("66.249.66.1")}, nil
+			}
+			return []net.IP{net.ParseIP("198.51.100.99")}, nil
+		},
+	)
+
+	next := &testHandler{}
+
+	// 1. Legitimate Googlebot
+	reqLegit := httptest.NewRequest(http.MethodGet, "/public/docs", nil)
+	reqLegit.RemoteAddr = "66.249.66.1:1234"
+	reqLegit.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)")
+	recLegit := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recLegit, reqLegit, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !next.handled || recLegit.Code != http.StatusOK {
+		t.Errorf("expected genuine Googlebot to pass with 200, got code %d handled %v", recLegit.Code, next.handled)
+	}
+
+	// 2. Spoofed Googlebot from attacker IP
+	next.handled = false
+	reqSpoofed := httptest.NewRequest(http.MethodGet, "/public/docs", nil)
+	reqSpoofed.RemoteAddr = "198.51.100.99:5432"
+	reqSpoofed.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)")
+	recSpoofed := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recSpoofed, reqSpoofed, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recSpoofed.Code != http.StatusForbidden {
+		t.Errorf("expected spoofed Googlebot to be blocked with 403, got code %d handled %v", recSpoofed.Code, next.handled)
+	}
+
+	// 3. Caddyfile directive parsing
+	d := caddyfile.NewTestDispenser(`
+		routewarden {
+			verify_search_engine_bots true
+		}
+	`)
+	var parsedRW caddywarden.RouteWarden
+	if err := parsedRW.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile error: %v", err)
+	}
+	if !parsedRW.VerifySearchEngineBots {
+		t.Errorf("expected VerifySearchEngineBots=true from Caddyfile")
+	}
+}
+
+func TestRouteWarden_BrowserImpersonationAndScriptClients(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:                    true,
+		DetectBrowserImpersonation: true,
+		BlockScriptClients:         true,
+		Methods:                    []string{"GET"},
+		Response:                   caddywarden.DefaultResponseConfig(),
+	}
+
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	next := &testHandler{}
+	chromeUA := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+
+	// 1. Spoofed Chrome (missing Accept-Language) -> 403
+	reqSpoofed := httptest.NewRequest(http.MethodGet, "/public/docs", nil)
+	reqSpoofed.Header.Set("User-Agent", chromeUA)
+	reqSpoofed.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	recSpoofed := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recSpoofed, reqSpoofed, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recSpoofed.Code != http.StatusForbidden {
+		t.Errorf("expected spoofed Chrome to be blocked with 403, got code %d handled %v", recSpoofed.Code, next.handled)
+	}
+
+	// 2. Legitimate Chrome with companion headers -> 200
+	next.handled = false
+	reqLegit := httptest.NewRequest(http.MethodGet, "/public/docs", nil)
+	reqLegit.Header.Set("User-Agent", chromeUA)
+	reqLegit.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	reqLegit.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	reqLegit.Header.Set("Sec-CH-UA", `"Chromium";v="128", "Not?A_Brand";v="24", "Google Chrome";v="128"`)
+	reqLegit.Header.Set("Sec-CH-UA-Mobile", "?0")
+	reqLegit.Header.Set("Sec-CH-UA-Platform", `"Windows"`)
+	reqLegit.Header.Set("Sec-Fetch-Site", "none")
+	reqLegit.Header.Set("Sec-Fetch-Mode", "navigate")
+	reqLegit.Header.Set("Sec-Fetch-Dest", "document")
+	recLegit := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recLegit, reqLegit, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !next.handled || recLegit.Code != http.StatusOK {
+		t.Errorf("expected legitimate Chrome to pass, got code %d handled %v", recLegit.Code, next.handled)
+	}
+
+	// 3. Script client (python-requests) -> 403
+	next.handled = false
+	reqScript := httptest.NewRequest(http.MethodGet, "/public/docs", nil)
+	reqScript.Header.Set("User-Agent", "python-requests/2.31.0")
+	recScript := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recScript, reqScript, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recScript.Code != http.StatusForbidden {
+		t.Errorf("expected python-requests to be blocked with 403, got code %d handled %v", recScript.Code, next.handled)
+	}
+
+	// 3b. Script client with empty User-Agent and X-Playwright header -> 403
+	next.handled = false
+	reqEmptyPW := httptest.NewRequest(http.MethodGet, "/public/docs", nil)
+	reqEmptyPW.Header.Set("X-Playwright", "true")
+	recEmptyPW := httptest.NewRecorder()
+	if err := rw.ServeHTTP(recEmptyPW, reqEmptyPW, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recEmptyPW.Code != http.StatusForbidden {
+		t.Errorf("expected empty UA with X-Playwright to be blocked with 403, got code %d handled %v", recEmptyPW.Code, next.handled)
+	}
+
+	// 3c. BlockUserAgents with ^$ matching empty User-Agent
+	rwEmptyUA := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: false,
+		BlockUserAgents:       []string{"^$"},
+		Methods:               []string{"GET"},
+		Response:              caddywarden.DefaultResponseConfig(),
+	}
+	if err := rwEmptyUA.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+	next.handled = false
+	reqNoUA := httptest.NewRequest(http.MethodGet, "/public/docs", nil)
+	recNoUA := httptest.NewRecorder()
+	if err := rwEmptyUA.ServeHTTP(recNoUA, reqNoUA, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recNoUA.Code != http.StatusForbidden {
+		t.Errorf("expected empty User-Agent to be blocked with ^$ pattern, got code %d handled %v", recNoUA.Code, next.handled)
+	}
+
+	// 4. Caddyfile parsing for new directives
+	d := caddyfile.NewTestDispenser(`
+		routewarden {
+			detect_browser_impersonation true
+			block_script_clients true
+		}
+	`)
+	var parsedRW caddywarden.RouteWarden
+	if err := parsedRW.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile error: %v", err)
+	}
+	if !parsedRW.DetectBrowserImpersonation {
+		t.Errorf("expected DetectBrowserImpersonation=true from Caddyfile")
+	}
+	if !parsedRW.BlockScriptClients {
+		t.Errorf("expected BlockScriptClients=true from Caddyfile")
+	}
+}
+
+func TestRouteWarden_BotDefenseLevelPresets(t *testing.T) {
+	next := &testHandler{}
+
+	// 1. Level: standard -> blocks GPTBot, python-requests, and spoofed Chrome; allows search bot (PerplexityBot)
+	rwStandard := caddywarden.RouteWarden{
+		Enabled:         true,
+		BotDefenseLevel: "standard",
+	}
+	ctx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
+	defer cancel()
+	if err := rwStandard.Provision(ctx); err != nil {
+		t.Fatalf("Provision failed: %v", err)
+	}
+
+	// GPTBot blocked
+	reqGPT := httptest.NewRequest(http.MethodGet, "/index.html", nil)
+	reqGPT.Header.Set("User-Agent", "Mozilla/5.0 AppleWebKit/537.36 (compatible; GPTBot/1.2; +https://openai.com/gptbot)")
+	recGPT := httptest.NewRecorder()
+	next.handled = false
+	if err := rwStandard.ServeHTTP(recGPT, reqGPT, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recGPT.Code != http.StatusForbidden {
+		t.Errorf("expected GPTBot to be blocked under standard level, got %d", recGPT.Code)
+	}
+
+	// Python-requests blocked
+	reqPy := httptest.NewRequest(http.MethodGet, "/index.html", nil)
+	reqPy.Header.Set("User-Agent", "python-requests/2.31.0")
+	recPy := httptest.NewRecorder()
+	next.handled = false
+	if err := rwStandard.ServeHTTP(recPy, reqPy, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recPy.Code != http.StatusForbidden {
+		t.Errorf("expected python-requests to be blocked under standard level, got %d", recPy.Code)
+	}
+
+	// Spoofed Chrome (missing Accept-Language) blocked
+	chromeUA := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+	reqSpoofed := httptest.NewRequest(http.MethodGet, "/index.html", nil)
+	reqSpoofed.Header.Set("User-Agent", chromeUA)
+	recSpoofed := httptest.NewRecorder()
+	next.handled = false
+	if err := rwStandard.ServeHTTP(recSpoofed, reqSpoofed, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recSpoofed.Code != http.StatusForbidden {
+		t.Errorf("expected spoofed Chrome to be blocked under standard level, got %d", recSpoofed.Code)
+	}
+
+	// Search bot (PerplexityBot) allowed under standard (train_only default)
+	reqPerp := httptest.NewRequest(http.MethodGet, "/index.html", nil)
+	reqPerp.Header.Set("User-Agent", "Mozilla/5.0 (compatible; PerplexityBot/1.0; +https://perplexity.ai/perplexitybot)")
+	recPerp := httptest.NewRecorder()
+	next.handled = false
+	if err := rwStandard.ServeHTTP(recPerp, reqPerp, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !next.handled || recPerp.Code != http.StatusOK {
+		t.Errorf("expected PerplexityBot to pass under standard level, got %d handled %v", recPerp.Code, next.handled)
+	}
+
+	// 2. Level: strict -> blocks search bot (PerplexityBot)
+	rwStrict := caddywarden.RouteWarden{
+		Enabled:         true,
+		BotDefenseLevel: "strict",
+	}
+	if err := rwStrict.Provision(ctx); err != nil {
+		t.Fatalf("Provision failed: %v", err)
+	}
+	recPerpStrict := httptest.NewRecorder()
+	next.handled = false
+	if err := rwStrict.ServeHTTP(recPerpStrict, reqPerp, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recPerpStrict.Code != http.StatusForbidden {
+		t.Errorf("expected PerplexityBot to be blocked under strict level, got %d", recPerpStrict.Code)
+	}
+
+	// 3. Level: light -> allows spoofed Chrome (browser impersonation off), blocks python-requests
+	rwLight := caddywarden.RouteWarden{
+		Enabled:         true,
+		BotDefenseLevel: "light",
+	}
+	if err := rwLight.Provision(ctx); err != nil {
+		t.Fatalf("Provision failed: %v", err)
+	}
+	recSpoofedLight := httptest.NewRecorder()
+	next.handled = false
+	if err := rwLight.ServeHTTP(recSpoofedLight, reqSpoofed, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !next.handled || recSpoofedLight.Code != http.StatusOK {
+		t.Errorf("expected spoofed Chrome to pass under light level, got %d", recSpoofedLight.Code)
+	}
+
+	recPyLight := httptest.NewRecorder()
+	next.handled = false
+	if err := rwLight.ServeHTTP(recPyLight, reqPy, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recPyLight.Code != http.StatusForbidden {
+		t.Errorf("expected python-requests to be blocked under light level, got %d", recPyLight.Code)
+	}
+
+	// 4. Caddyfile parsing with bot_defense_level and explicit override
+	d := caddyfile.NewTestDispenser(`
+		routewarden {
+			bot_defense_level standard
+			detect_browser_impersonation false
+		}
+	`)
+	var parsedRW caddywarden.RouteWarden
+	if err := parsedRW.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile error: %v", err)
+	}
+	if err := parsedRW.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+	if parsedRW.DetectBrowserImpersonation {
+		t.Errorf("expected DetectBrowserImpersonation to remain false due to explicit override")
+	}
+	if !parsedRW.BlockAIBots {
+		t.Errorf("expected BlockAIBots to be true from standard level preset")
+	}
+
+	// Spoofed Chrome should pass because detect_browser_impersonation is false
+	recSpoofedOverride := httptest.NewRecorder()
+	next.handled = false
+	if err := parsedRW.ServeHTTP(recSpoofedOverride, reqSpoofed, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !next.handled || recSpoofedOverride.Code != http.StatusOK {
+		t.Errorf("expected spoofed Chrome to pass with explicit override, got %d", recSpoofedOverride.Code)
+	}
+
+	// 5. Caddy native JSON unmarshaling with camelCase and explicit override
+	caddyJSON := `{
+		"enabled": true,
+		"botDefenseLevel": "standard",
+		"detectBrowserImpersonation": false
+	}`
+	var jsonRW caddywarden.RouteWarden
+	if err := json.Unmarshal([]byte(caddyJSON), &jsonRW); err != nil {
+		t.Fatalf("json.Unmarshal error: %v", err)
+	}
+	if err := jsonRW.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+	if jsonRW.DetectBrowserImpersonation {
+		t.Errorf("expected DetectBrowserImpersonation to remain false in Caddy JSON unmarshaling")
+	}
+	if !jsonRW.BlockAIBots {
+		t.Errorf("expected BlockAIBots to be true from standard level preset in Caddy JSON")
+	}
+	recSpoofedJSON := httptest.NewRecorder()
+	next.handled = false
+	if err := jsonRW.ServeHTTP(recSpoofedJSON, reqSpoofed, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !next.handled || recSpoofedJSON.Code != http.StatusOK {
+		t.Errorf("expected spoofed Chrome to pass in Caddy JSON override, got %d", recSpoofedJSON.Code)
+	}
+
+	// 6. Amazonbot and Anthropic/1.0 AI bot defense tests
+	reqAmazon := httptest.NewRequest("GET", "/index.html", nil)
+	reqAmazon.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Amazonbot/0.1; +https://developer.amazon.com/support/amazonbot)")
+	recAmazon := httptest.NewRecorder()
+	next.handled = false
+	if err := jsonRW.ServeHTTP(recAmazon, reqAmazon, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recAmazon.Code != http.StatusForbidden {
+		t.Errorf("expected Amazonbot to be blocked, got %d", recAmazon.Code)
+	}
+
+	reqAnthropic := httptest.NewRequest("GET", "/index.html", nil)
+	reqAnthropic.Header.Set("User-Agent", "Anthropic/1.0")
+	recAnthropic := httptest.NewRecorder()
+	next.handled = false
+	if err := jsonRW.ServeHTTP(recAnthropic, reqAnthropic, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if next.handled || recAnthropic.Code != http.StatusForbidden {
+		t.Errorf("expected Anthropic/1.0 to be blocked, got %d", recAnthropic.Code)
+	}
+}
+
+func TestRouteWarden_TrailingSlashMatching(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: false,
+		BlockPatterns:         []string{`(?i)^/admin/$`},
+		Mode:                  "json",
+	}
+	ctx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
+	defer cancel()
+
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	var handled bool
+	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		handled = true
+		w.WriteHeader(http.StatusOK)
+		return nil
+	})
+
+	// 1. Request with trailing slash
+	reqSlash := httptest.NewRequest("GET", "/admin/", nil)
+	recSlash := httptest.NewRecorder()
+	handled = false
+	if err := rw.ServeHTTP(recSlash, reqSlash, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if handled || recSlash.Code != http.StatusForbidden {
+		t.Errorf("expected /admin/ to be blocked with 403, got %d (handled=%v)", recSlash.Code, handled)
+	}
+
+	// 2. Request without trailing slash
+	reqNoSlash := httptest.NewRequest("GET", "/admin", nil)
+	recNoSlash := httptest.NewRecorder()
+	handled = false
+	if err := rw.ServeHTTP(recNoSlash, reqNoSlash, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if handled || recNoSlash.Code != http.StatusForbidden {
+		t.Errorf("expected /admin to be blocked with 403 (candidate trailing slash), got %d (handled=%v)", recNoSlash.Code, handled)
+	}
+
+	// 3. Subpath should not match exact ^/admin/$
+	reqSubpath := httptest.NewRequest("GET", "/admin/users", nil)
+	recSubpath := httptest.NewRecorder()
+	handled = false
+	if err := rw.ServeHTTP(recSubpath, reqSubpath, next); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if !handled || recSubpath.Code != http.StatusOK {
+		t.Errorf("expected /admin/users to pass with 200, got %d (handled=%v)", recSubpath.Code, handled)
+	}
+}
+
+func TestRouteWarden_CheckHeaders_WhitespaceAndQuotes(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+		CheckHeaders:          []string{"X-Forwarded-Prefix", "X-Rewrite-URL"},
+		Mode:                  "json",
+	}
+	ctx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
+	defer cancel()
+
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	cases := []struct {
+		name        string
+		headerKey   string
+		headerVal   string
+		wantStatus  int
+		wantHandled bool
+	}{
+		{
+			name:        "Header with whitespace",
+			headerKey:   "X-Forwarded-Prefix",
+			headerVal:   "  /.env  ",
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Header wrapped in double quotes",
+			headerKey:   "X-Forwarded-Prefix",
+			headerVal:   `"/wp-config.php"`,
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Header wrapped in single quotes",
+			headerKey:   "X-Rewrite-URL",
+			headerVal:   `'/.env'`,
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Comma-separated header with quotes and spaces",
+			headerKey:   "X-Forwarded-Prefix",
+			headerVal:   `" /safe ", " /.env "`,
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Safe header",
+			headerKey:   "X-Forwarded-Prefix",
+			headerVal:   `"/dashboard"`,
+			wantStatus:  http.StatusOK,
+			wantHandled: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var handled bool
+			next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+				handled = true
+				w.WriteHeader(http.StatusOK)
+				return nil
+			})
+			req := httptest.NewRequest("GET", "/public", nil)
+			req.Header.Set(tc.headerKey, tc.headerVal)
+			rec := httptest.NewRecorder()
+			if err := rw.ServeHTTP(rec, req, next); err != nil {
+				t.Fatalf("ServeHTTP error: %v", err)
+			}
+			if rec.Code != tc.wantStatus || handled != tc.wantHandled {
+				t.Errorf("expected status=%d, handled=%v; got status=%d, handled=%v", tc.wantStatus, tc.wantHandled, rec.Code, handled)
+			}
+		})
+	}
+}
+
+func TestRouteWarden_EncodedDelimitersAndWhitespaceEvasion(t *testing.T) {
+	rw := &caddywarden.RouteWarden{
+		Enabled:               true,
+		EnableDefaultPatterns: true,
+		Mode:                  "json",
+	}
+	ctx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
+	defer cancel()
+
+	if err := rw.Provision(ctx); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	cases := []struct {
+		name        string
+		path        string
+		wantStatus  int
+		wantHandled bool
+	}{
+		{
+			name:        "Encoded question mark in sensitive extension (?param)",
+			path:        "/backup.sql%3fparam=value",
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Encoded fragment in sensitive file (#section)",
+			path:        "/database.sql%23section",
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Encoded query and fragment combined (%3f and %23)",
+			path:        "/server.key%3ffoo%23bar",
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Encoded carriage return (%0d)",
+			path:        "/.env%0d",
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Encoded newline (%0a)",
+			path:        "/.env%0a",
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Encoded horizontal tab (%09)",
+			path:        "/.env%09",
+			wantStatus:  http.StatusForbidden,
+			wantHandled: false,
+		},
+		{
+			name:        "Clean harmless request",
+			path:        "/index.html",
+			wantStatus:  http.StatusOK,
+			wantHandled: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var handled bool
+			next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+				handled = true
+				w.WriteHeader(http.StatusOK)
+				return nil
+			})
+			req := httptest.NewRequest("GET", tc.path, nil)
+			rec := httptest.NewRecorder()
+			if err := rw.ServeHTTP(rec, req, next); err != nil {
+				t.Fatalf("ServeHTTP error: %v", err)
+			}
+			if rec.Code != tc.wantStatus || handled != tc.wantHandled {
+				t.Errorf("expected status=%d, handled=%v; got status=%d, handled=%v", tc.wantStatus, tc.wantHandled, rec.Code, handled)
+			}
+		})
+	}
+}
+
+
+
