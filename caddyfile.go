@@ -155,6 +155,13 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				rw.HoneypotTrapPaths = append(rw.HoneypotTrapPaths, args...)
+			case "enable_robots_txt_honeypot", "enableRobotsTxtHoneypot":
+				rw.EnableRobotsTxtHoneypot = parseBoolArg(d, true)
+			case "robots_txt_honeypot_secret", "robotsTxtHoneypotSecret":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				rw.RobotsTxtHoneypotSecret = d.Val()
 			case "trap_ban_duration":
 				if !d.NextArg() {
 					return d.ArgErr()

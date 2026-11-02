@@ -74,6 +74,8 @@ type RouteWarden struct {
 	BlockUserAgents            []string        `json:"block_user_agents,omitempty"`
 	AllowUserAgents            []string        `json:"allow_user_agents,omitempty"`
 	HoneypotTrapPaths          []string        `json:"honeypot_trap_paths,omitempty"`
+	EnableRobotsTxtHoneypot    bool            `json:"enable_robots_txt_honeypot,omitempty"`
+	RobotsTxtHoneypotSecret    string          `json:"robots_txt_honeypot_secret,omitempty"`
 	TrapBanDuration            string          `json:"trap_ban_duration,omitempty"`
 	VerifySearchEngineBots     bool            `json:"verify_search_engine_bots,omitempty"`
 	DetectBrowserImpersonation bool            `json:"detect_browser_impersonation,omitempty"`
@@ -156,6 +158,8 @@ func (rw *RouteWarden) UnmarshalJSON(data []byte) error {
 		BlockUserAgents            []string `json:"blockUserAgents"`
 		AllowUserAgents            []string `json:"allowUserAgents"`
 		HoneypotTrapPaths          []string `json:"honeypotTrapPaths"`
+		EnableRobotsTxtHoneypot    *bool    `json:"enableRobotsTxtHoneypot"`
+		RobotsTxtHoneypotSecret    *string  `json:"robotsTxtHoneypotSecret"`
 		TrapBanDuration            *string  `json:"trapBanDuration"`
 		VerifySearchEngineBots     *bool    `json:"verifySearchEngineBots"`
 		DetectBrowserImpersonation *bool    `json:"detectBrowserImpersonation"`
@@ -213,6 +217,12 @@ func (rw *RouteWarden) UnmarshalJSON(data []byte) error {
 		}
 		if camel.HoneypotTrapPaths != nil {
 			rw.HoneypotTrapPaths = camel.HoneypotTrapPaths
+		}
+		if camel.EnableRobotsTxtHoneypot != nil {
+			rw.EnableRobotsTxtHoneypot = *camel.EnableRobotsTxtHoneypot
+		}
+		if camel.RobotsTxtHoneypotSecret != nil {
+			rw.RobotsTxtHoneypotSecret = *camel.RobotsTxtHoneypotSecret
 		}
 		if camel.TrapBanDuration != nil {
 			rw.TrapBanDuration = *camel.TrapBanDuration
@@ -340,6 +350,10 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 			AllowUserAgentsSnake            []string              `json:"allow_user_agents"`
 			HoneypotTrapPaths               []string              `json:"honeypotTrapPaths"`
 			HoneypotTrapPathsSnake          []string              `json:"honeypot_trap_paths"`
+			EnableRobotsTxtHoneypot         *bool                 `json:"enableRobotsTxtHoneypot"`
+			EnableRobotsTxtHoneypotSnake    *bool                 `json:"enable_robots_txt_honeypot"`
+			RobotsTxtHoneypotSecret         *string               `json:"robotsTxtHoneypotSecret"`
+			RobotsTxtHoneypotSecretSnake    *string               `json:"robots_txt_honeypot_secret"`
 			TrapBanDuration                 *string               `json:"trapBanDuration"`
 			TrapBanDurationSnake            *string               `json:"trap_ban_duration"`
 			VerifySearchEngineBots          *bool                 `json:"verifySearchEngineBots"`
@@ -456,6 +470,16 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 			fileCfg.HoneypotTrapPaths = scf.HoneypotTrapPaths
 		} else if len(scf.HoneypotTrapPathsSnake) > 0 {
 			fileCfg.HoneypotTrapPaths = scf.HoneypotTrapPathsSnake
+		}
+		if scf.EnableRobotsTxtHoneypot != nil {
+			fileCfg.EnableRobotsTxtHoneypot = *scf.EnableRobotsTxtHoneypot
+		} else if scf.EnableRobotsTxtHoneypotSnake != nil {
+			fileCfg.EnableRobotsTxtHoneypot = *scf.EnableRobotsTxtHoneypotSnake
+		}
+		if scf.RobotsTxtHoneypotSecret != nil {
+			fileCfg.RobotsTxtHoneypotSecret = *scf.RobotsTxtHoneypotSecret
+		} else if scf.RobotsTxtHoneypotSecretSnake != nil {
+			fileCfg.RobotsTxtHoneypotSecret = *scf.RobotsTxtHoneypotSecretSnake
 		}
 		if scf.TrapBanDuration != nil {
 			fileCfg.TrapBanDuration = *scf.TrapBanDuration
@@ -648,6 +672,12 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		}
 		if len(rw.HoneypotTrapPaths) > 0 {
 			fileCfg.HoneypotTrapPaths = rw.HoneypotTrapPaths
+		}
+		if rw.isExplicit("enable_robots_txt_honeypot", "enableRobotsTxtHoneypot") || (!hasExplicit && rw.EnableRobotsTxtHoneypot) {
+			fileCfg.EnableRobotsTxtHoneypot = rw.EnableRobotsTxtHoneypot
+		}
+		if rw.isExplicit("robots_txt_honeypot_secret", "robotsTxtHoneypotSecret") || (!hasExplicit && rw.RobotsTxtHoneypotSecret != "") {
+			fileCfg.RobotsTxtHoneypotSecret = rw.RobotsTxtHoneypotSecret
 		}
 		if rw.TrapBanDuration != "" {
 			fileCfg.TrapBanDuration = rw.TrapBanDuration
@@ -886,7 +916,7 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 
 	// 6. Initialize Honeypot Spider Trap Ban Table
 	rw.parsedBanDuration = ParseBanDuration(rw.TrapBanDuration)
-	if len(rw.HoneypotTrapPaths) > 0 {
+	if len(rw.HoneypotTrapPaths) > 0 || rw.EnableRobotsTxtHoneypot {
 		rw.banTable = NewBanTable(10000)
 	}
 
@@ -1123,10 +1153,19 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 		)
 	}
 
-	// Stage 2b: Honeypot Spider Trap Check
+	// Stage 2b: Honeypot Spider Trap Check (static and dynamic robots.txt traps)
+	var activeTraps []string
 	if len(rw.HoneypotTrapPaths) > 0 {
+		activeTraps = append(activeTraps, rw.HoneypotTrapPaths...)
+	}
+	if rw.EnableRobotsTxtHoneypot {
+		_, dynPrefixes := GetActiveRobotsHoneypotTraps(rw.RobotsTxtHoneypotSecret, time.Now())
+		activeTraps = append(activeTraps, dynPrefixes...)
+	}
+
+	if len(activeTraps) > 0 {
 		for _, candPath := range candidatePaths {
-			for _, trapPath := range rw.HoneypotTrapPaths {
+			for _, trapPath := range activeTraps {
 				cleanTrap := strings.TrimSpace(trapPath)
 				if cleanTrap != "" && !strings.HasPrefix(cleanTrap, "/") {
 					cleanTrap = "/" + cleanTrap
@@ -1174,7 +1213,7 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 						zap.String("pattern", re.String()),
 					)
 				}
-				return next.ServeHTTP(w, req)
+				return rw.forwardRequest(w, req, next)
 			}
 		}
 	}
@@ -1484,6 +1523,45 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 			zap.String("path", req.URL.Path),
 			zap.String("method", req.Method),
 		)
+	}
+
+	return rw.forwardRequest(w, req, next)
+}
+
+func (rw *RouteWarden) forwardRequest(w http.ResponseWriter, req *http.Request, next caddyhttp.Handler) error {
+	if rw.EnableRobotsTxtHoneypot && IsRobotsTxtPath(req.URL.Path) && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
+		buf := &robotsResponseBuffer{
+			ResponseWriter: w,
+			statusCode:     http.StatusOK,
+			header:         make(http.Header),
+		}
+		err := next.ServeHTTP(buf, req)
+
+		activeTrap, _ := GetActiveRobotsHoneypotTraps(rw.RobotsTxtHoneypotSecret, time.Now())
+		var finalBody []byte
+		if buf.statusCode == http.StatusNotFound {
+			buf.statusCode = http.StatusOK
+			finalBody = InjectRobotsTxtTrap(nil, activeTrap)
+		} else if buf.statusCode >= 200 && buf.statusCode < 300 {
+			finalBody = InjectRobotsTxtTrap(buf.buf.Bytes(), activeTrap)
+		} else {
+			buf.flushOriginal()
+			return err
+		}
+
+		for k, vv := range buf.header {
+			for _, v := range vv {
+				w.Header().Add(k, v)
+			}
+		}
+		w.Header().Del("Content-Length")
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(buf.statusCode)
+		_, writeErr := w.Write(finalBody)
+		if err != nil {
+			return err
+		}
+		return writeErr
 	}
 
 	return next.ServeHTTP(w, req)
