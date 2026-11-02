@@ -173,6 +173,8 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				rw.DetectBrowserImpersonation = parseBoolArg(d, true)
 			case "block_script_clients":
 				rw.BlockScriptClients = parseBoolArg(d, true)
+			case "block_cloud_hosts":
+				rw.BlockCloudHosts = parseBoolArg(d, true)
 			case "allowed_ips":
 				args := d.RemainingArgs()
 				if len(args) == 0 {

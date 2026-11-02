@@ -80,6 +80,7 @@ type RouteWarden struct {
 	VerifySearchEngineBots     bool            `json:"verify_search_engine_bots,omitempty"`
 	DetectBrowserImpersonation bool            `json:"detect_browser_impersonation,omitempty"`
 	BlockScriptClients         bool            `json:"block_script_clients,omitempty"`
+	BlockCloudHosts            bool            `json:"block_cloud_hosts,omitempty"`
 	AllowedIPs                 []string        `json:"allowed_ips,omitempty"`
 	TrustedProxies             []string        `json:"trusted_proxies,omitempty"`
 	Methods                    []string        `json:"methods,omitempty"`
@@ -163,8 +164,11 @@ func (rw *RouteWarden) UnmarshalJSON(data []byte) error {
 		TrapBanDuration            *string  `json:"trapBanDuration"`
 		VerifySearchEngineBots     *bool    `json:"verifySearchEngineBots"`
 		DetectBrowserImpersonation *bool    `json:"detectBrowserImpersonation"`
-		BlockScriptClients         *bool    `json:"blockScriptClients"`
-		AllowedIPs                 []string `json:"allowedIps"`
+		BlockScriptClients              *bool    `json:"blockScriptClients"`
+		BlockScriptClientsSnake         *bool    `json:"block_script_clients"`
+		BlockCloudHosts                 *bool    `json:"blockCloudHosts"`
+		BlockCloudHostsSnake            *bool    `json:"block_cloud_hosts"`
+		AllowedIPs                      []string `json:"allowedIps"`
 		TrustedProxies             []string `json:"trustedProxies"`
 		CheckQuery                 *bool    `json:"checkQuery"`
 		CheckHeaders               []string `json:"checkHeaders"`
@@ -235,6 +239,13 @@ func (rw *RouteWarden) UnmarshalJSON(data []byte) error {
 		}
 		if camel.BlockScriptClients != nil {
 			rw.BlockScriptClients = *camel.BlockScriptClients
+		} else if camel.BlockScriptClientsSnake != nil {
+			rw.BlockScriptClients = *camel.BlockScriptClientsSnake
+		}
+		if camel.BlockCloudHosts != nil {
+			rw.BlockCloudHosts = *camel.BlockCloudHosts
+		} else if camel.BlockCloudHostsSnake != nil {
+			rw.BlockCloudHosts = *camel.BlockCloudHostsSnake
 		}
 		if camel.AllowedIPs != nil {
 			rw.AllowedIPs = camel.AllowedIPs
@@ -362,6 +373,8 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 			DetectBrowserImpersonationSnake *bool                 `json:"detect_browser_impersonation"`
 			BlockScriptClients              *bool                 `json:"blockScriptClients"`
 			BlockScriptClientsSnake         *bool                 `json:"block_script_clients"`
+			BlockCloudHosts                 *bool                 `json:"blockCloudHosts"`
+			BlockCloudHostsSnake            *bool                 `json:"block_cloud_hosts"`
 			AllowedIPs                      []string              `json:"allowedIps"`
 			AllowedIPsSnake                 []string              `json:"allowed_ips"`
 			TrustedProxies                  []string              `json:"trustedProxies"`
@@ -500,6 +513,11 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 			fileCfg.BlockScriptClients = *scf.BlockScriptClients
 		} else if scf.BlockScriptClientsSnake != nil {
 			fileCfg.BlockScriptClients = *scf.BlockScriptClientsSnake
+		}
+		if scf.BlockCloudHosts != nil {
+			fileCfg.BlockCloudHosts = *scf.BlockCloudHosts
+		} else if scf.BlockCloudHostsSnake != nil {
+			fileCfg.BlockCloudHosts = *scf.BlockCloudHostsSnake
 		}
 		if len(scf.AllowedIPs) > 0 {
 			fileCfg.AllowedIPs = scf.AllowedIPs
@@ -690,6 +708,9 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 		}
 		if rw.isExplicit("block_script_clients", "blockScriptClients") || (!hasExplicit && rw.BlockScriptClients) {
 			fileCfg.BlockScriptClients = rw.BlockScriptClients
+		}
+		if rw.isExplicit("block_cloud_hosts", "blockCloudHosts") || (!hasExplicit && rw.BlockCloudHosts) {
+			fileCfg.BlockCloudHosts = rw.BlockCloudHosts
 		}
 		if len(rw.AllowedIPs) > 0 {
 			fileCfg.AllowedIPs = rw.AllowedIPs
@@ -893,12 +914,12 @@ func (rw *RouteWarden) Provision(ctx caddy.Context) error {
 	}
 
 	// 4. Initialize IP Filter
-	if len(rw.AllowedIPs) > 0 || len(rw.TrustedProxies) > 0 || len(rw.AllowedASNs) > 0 || len(rw.BlockedASNs) > 0 {
+	if len(rw.AllowedIPs) > 0 || len(rw.TrustedProxies) > 0 || len(rw.AllowedASNs) > 0 || len(rw.BlockedASNs) > 0 || rw.BlockCloudHosts {
 		filter, err := NewIPFilter(rw.AllowedIPs, rw.TrustedProxies)
 		if err != nil {
 			return fmt.Errorf("routewarden: invalid ip filter config: %w", err)
 		}
-		filter.asn, err = NewASNFilterEx(rw.AllowedASNs, rw.BlockedASNs, rw.ASNDB)
+		filter.asn, err = NewASNFilterEx(rw.AllowedASNs, rw.BlockedASNs, rw.ASNDB, rw.BlockCloudHosts)
 		if err != nil {
 			return err
 		}
@@ -1215,6 +1236,33 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 				}
 				return rw.forwardRequest(w, req, next)
 			}
+		}
+	}
+
+	// Datacenter & Cloud Hosting IP Classifier
+	if !uaAllowed && rw.BlockCloudHosts && rw.ipFilter != nil && rw.ipFilter.asn != nil {
+		if isCloud, cloudASN, provider := rw.ipFilter.asn.IsCloudHost(clientIP); isCloud {
+			reason := "cloud_host_blocked"
+			if reBrowserLike.MatchString(ua) {
+				reason = "datacenter_browser_impersonation"
+			}
+			matchedPattern := fmt.Sprintf("AS%d (%s)", cloudASN, provider)
+			rw.logSecurityEvent(req, clientIP, matchedPattern, reason)
+			if rw.logger != nil {
+				rw.logger.Warn("routewarden: client blocked by cloud host classifier",
+					zap.String("client_ip", clientIP),
+					zap.Uint32("asn", cloudASN),
+					zap.String("provider", provider),
+					zap.String("reason", reason),
+				)
+			}
+			if rw.responseHandler != nil {
+				rw.responseHandler.ServeBlockedRequest(w, req)
+			} else {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte("Access Denied\n"))
+			}
+			return nil
 		}
 	}
 
