@@ -113,12 +113,68 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					rw.AllowedASNs = []string{}
 				}
 				rw.AllowedASNs = append(rw.AllowedASNs, args...)
+			case "blocked_asns":
+				args := d.RemainingArgs()
+				if rw.BlockedASNs == nil {
+					rw.BlockedASNs = []string{}
+				}
+				rw.BlockedASNs = append(rw.BlockedASNs, args...)
 			case "asn_db":
 				args := d.RemainingArgs()
 				if len(args) != 1 {
 					return d.ArgErr()
 				}
 				rw.ASNDB = args[0]
+			case "bot_defense_level", "botDefenseLevel":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				rw.BotDefenseLevel = d.Val()
+			case "block_ai_bots":
+				rw.BlockAIBots = parseBoolArg(d, true)
+			case "ai_bot_profile":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				rw.AIBotProfile = d.Val()
+			case "block_user_agents":
+				args := d.RemainingArgs()
+				if len(args) == 0 {
+					return d.ArgErr()
+				}
+				rw.BlockUserAgents = append(rw.BlockUserAgents, args...)
+			case "allow_user_agents":
+				args := d.RemainingArgs()
+				if len(args) == 0 {
+					return d.ArgErr()
+				}
+				rw.AllowUserAgents = append(rw.AllowUserAgents, args...)
+			case "honeypot_trap_paths", "honeypot_trap_path":
+				args := d.RemainingArgs()
+				if len(args) == 0 {
+					return d.ArgErr()
+				}
+				rw.HoneypotTrapPaths = append(rw.HoneypotTrapPaths, args...)
+			case "enable_robots_txt_honeypot", "enableRobotsTxtHoneypot":
+				rw.EnableRobotsTxtHoneypot = parseBoolArg(d, true)
+			case "robots_txt_honeypot_secret", "robotsTxtHoneypotSecret":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				rw.RobotsTxtHoneypotSecret = d.Val()
+			case "trap_ban_duration":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				rw.TrapBanDuration = d.Val()
+			case "verify_search_engine_bots":
+				rw.VerifySearchEngineBots = parseBoolArg(d, true)
+			case "detect_browser_impersonation":
+				rw.DetectBrowserImpersonation = parseBoolArg(d, true)
+			case "block_script_clients":
+				rw.BlockScriptClients = parseBoolArg(d, true)
+			case "block_cloud_hosts":
+				rw.BlockCloudHosts = parseBoolArg(d, true)
 			case "allowed_ips":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
@@ -293,6 +349,32 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 							return d.Errf("invalid stream_size_mb %s: %v", d.Val(), err)
 						}
 						rw.Response.StreamSizeMB = mb
+
+					case "pow_difficulty":
+						if !d.NextArg() {
+							return d.ArgErr()
+						}
+						diff, err := strconv.Atoi(d.Val())
+						if err != nil {
+							return d.Errf("invalid pow_difficulty %s: %v", d.Val(), err)
+						}
+						rw.Response.PoWDifficulty = diff
+
+					case "pow_secret":
+						if !d.NextArg() {
+							return d.ArgErr()
+						}
+						rw.Response.PoWSecret = d.Val()
+
+					case "pow_timeout_seconds":
+						if !d.NextArg() {
+							return d.ArgErr()
+						}
+						tSec, err := strconv.Atoi(d.Val())
+						if err != nil {
+							return d.Errf("invalid pow_timeout_seconds %s: %v", d.Val(), err)
+						}
+						rw.Response.PoWTimeoutSeconds = tSec
 
 					case "header", "headers":
 						var key, val string

@@ -859,3 +859,32 @@ func TestCaddyfile_TopLevelOverrideConfigFile(t *testing.T) {
 	}
 }
 
+func TestCaddyfile_BotDefenseBooleanVariants(t *testing.T) {
+	caddyfileContent := `
+	routewarden {
+		bot_defense_level standard
+		detect_browser_impersonation off
+		block_script_clients false
+		verify_search_engine_bots no
+	}`
+
+	d := caddyfile.NewTestDispenser(caddyfileContent)
+	rw := &caddywarden.RouteWarden{}
+	if err := rw.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile error: %v", err)
+	}
+	if err := rw.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision error: %v", err)
+	}
+
+	if rw.DetectBrowserImpersonation {
+		t.Errorf("expected DetectBrowserImpersonation to be false, got true")
+	}
+	if rw.BlockScriptClients {
+		t.Errorf("expected BlockScriptClients to be false, got true")
+	}
+	if rw.VerifySearchEngineBots {
+		t.Errorf("expected VerifySearchEngineBots to be false, got true")
+	}
+}
+
