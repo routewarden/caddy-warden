@@ -350,6 +350,32 @@ func (rw *RouteWarden) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 						}
 						rw.Response.StreamSizeMB = mb
 
+					case "pow_difficulty":
+						if !d.NextArg() {
+							return d.ArgErr()
+						}
+						diff, err := strconv.Atoi(d.Val())
+						if err != nil {
+							return d.Errf("invalid pow_difficulty %s: %v", d.Val(), err)
+						}
+						rw.Response.PoWDifficulty = diff
+
+					case "pow_secret":
+						if !d.NextArg() {
+							return d.ArgErr()
+						}
+						rw.Response.PoWSecret = d.Val()
+
+					case "pow_timeout_seconds":
+						if !d.NextArg() {
+							return d.ArgErr()
+						}
+						tSec, err := strconv.Atoi(d.Val())
+						if err != nil {
+							return d.Errf("invalid pow_timeout_seconds %s: %v", d.Val(), err)
+						}
+						rw.Response.PoWTimeoutSeconds = tSec
+
 					case "header", "headers":
 						var key, val string
 						if !d.Args(&key, &val) {

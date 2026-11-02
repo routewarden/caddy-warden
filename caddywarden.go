@@ -1070,6 +1070,42 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 		return nil
 	}
 
+	// Check PoW solution cookie (__rw_pow) or header (X-RW-PoW)
+	powToken := extractPoWToken(req)
+	isPoWValid := false
+	if powToken != "" && rw.responseHandler != nil && rw.responseHandler.config != nil {
+		secret := rw.responseHandler.config.PoWSecret
+		if secret == "" {
+			secret = DefaultPoWSecret
+		}
+		timeout := rw.responseHandler.config.PoWTimeoutSeconds
+		if timeout <= 0 {
+			timeout = DefaultPoWTimeoutSeconds
+		}
+		isPoWValid, _ = VerifyPoWSolution(clientIP, secret, powToken, timeout, time.Now())
+	}
+
+	serveBlock := func(target, pattern, reason string) error {
+		if isPoWValid {
+			if rw.Debug && rw.logger != nil {
+				rw.logger.Debug("routewarden: client PoW verified, bypassing block",
+					zap.String("client_ip", clientIP),
+					zap.String("pattern", pattern),
+					zap.String("reason", reason),
+				)
+			}
+			return rw.forwardRequest(w, req, next)
+		}
+		rw.logSecurityEvent(req, target, pattern, reason)
+		if rw.responseHandler != nil {
+			rw.responseHandler.ServeBlockedRequest(w, req)
+		} else {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte("Access Denied\n"))
+		}
+		return nil
+	}
+
 	// Stage 1d: User-Agent & AI Bot Inspection
 	ua := req.UserAgent()
 	uaAllowed := false
@@ -1085,7 +1121,6 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 		if rw.VerifySearchEngineBots && rw.fcrdnsVerifier != nil {
 			if claimsBot, engine := DetectSearchEngineBot(ua); claimsBot {
 				if !rw.fcrdnsVerifier.Verify(req.Context(), clientIP, engine) {
-					rw.logSecurityEvent(req, ua, string(engine)+"_spoofed", "search_engine_spoofed")
 					if rw.logger != nil {
 						rw.logger.Warn("routewarden: blocked spoofed search engine bot",
 							zap.String("client_ip", clientIP),
@@ -1093,13 +1128,7 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 							zap.String("claimed_engine", string(engine)),
 						)
 					}
-					if rw.responseHandler != nil {
-						rw.responseHandler.ServeBlockedRequest(w, req)
-					} else {
-						w.WriteHeader(http.StatusForbidden)
-						_, _ = w.Write([]byte("Access Denied\n"))
-					}
-					return nil
+					return serveBlock(ua, string(engine)+"_spoofed", "search_engine_spoofed")
 				}
 				uaAllowed = true
 			}
@@ -1146,7 +1175,6 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 
 		if uaBlocked {
 			clientIP := rw.extractClientIP(req)
-			rw.logSecurityEvent(req, ua, uaPattern, uaReason)
 			if rw.logger != nil {
 				rw.logger.Warn("routewarden: blocked bot or crawler user agent",
 					zap.String("client_ip", clientIP),
@@ -1155,13 +1183,7 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 					zap.String("reason", uaReason),
 				)
 			}
-			if rw.responseHandler != nil {
-				rw.responseHandler.ServeBlockedRequest(w, req)
-			} else {
-				w.WriteHeader(http.StatusForbidden)
-				_, _ = w.Write([]byte("Access Denied\n"))
-			}
-			return nil
+			return serveBlock(ua, uaPattern, uaReason)
 		}
 	}
 
@@ -1247,7 +1269,6 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 				reason = "datacenter_browser_impersonation"
 			}
 			matchedPattern := fmt.Sprintf("AS%d (%s)", cloudASN, provider)
-			rw.logSecurityEvent(req, clientIP, matchedPattern, reason)
 			if rw.logger != nil {
 				rw.logger.Warn("routewarden: client blocked by cloud host classifier",
 					zap.String("client_ip", clientIP),
@@ -1256,13 +1277,7 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 					zap.String("reason", reason),
 				)
 			}
-			if rw.responseHandler != nil {
-				rw.responseHandler.ServeBlockedRequest(w, req)
-			} else {
-				w.WriteHeader(http.StatusForbidden)
-				_, _ = w.Write([]byte("Access Denied\n"))
-			}
-			return nil
+			return serveBlock(clientIP, matchedPattern, reason)
 		}
 	}
 
@@ -1537,7 +1552,6 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 	}
 
 	if isBlocked {
-		rw.logSecurityEvent(req, blockedTarget, blockedByPattern, blockedReason)
 		respMode := "text"
 		if rw.responseHandler != nil && rw.responseHandler.config != nil && rw.responseHandler.config.Mode != "" {
 			respMode = rw.responseHandler.config.Mode
@@ -1557,13 +1571,7 @@ func (rw *RouteWarden) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 				zap.String("mode", respMode),
 			)
 		}
-		if rw.responseHandler != nil {
-			rw.responseHandler.ServeBlockedRequest(w, req)
-		} else {
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte("Access Denied\n"))
-		}
-		return nil
+		return serveBlock(blockedTarget, blockedByPattern, blockedReason)
 	}
 
 	if rw.Debug && rw.logger != nil {
